@@ -36,6 +36,17 @@ typedef struct
 } dmeth_config_t;
 
 /**
+ * @brief Loopback test mode - lets an on-target test verify RX/TX
+ *        communication without a cable or link partner.
+ */
+typedef enum
+{
+    dmeth_loopback_mode_none = 0,  /**< Normal operation - no loopback */
+    dmeth_loopback_mode_mac,       /**< MACCR.LM: loops TX to RX inside the MAC, before the PHY/RMII pins - exercises MAC+DMA+descriptor+ISR plumbing without needing a real PHY chip at all */
+    dmeth_loopback_mode_phy,       /**< PHY BCR bit 14 (IEEE 802.3 clause 22 standard, same on every PHY): loops TX to RX inside the PHY chip, after the RMII pins - additionally exercises the real RMII electrical connection and PHY chip, still without a cable/link partner */
+} dmeth_loopback_mode_t;
+
+/**
  * @brief Opaque driver context type (forward declaration)
  */
 struct dmdrvi_context;

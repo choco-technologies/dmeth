@@ -44,6 +44,15 @@ dmod_dmeth_port_api(1.0, int,  _stop,  ( dmeth_instance_t instance ) );
 dmod_dmeth_port_api(1.0, bool, _get_link_status, ( dmeth_instance_t instance ) );
 dmod_dmeth_port_api(1.0, int,  _set_promiscuous_mode, ( dmeth_instance_t instance, bool enable ) );
 
+/* --- Loopback (test-only) ---
+ *
+ * Lets an on-target test (see tests/dmeth_test.c) verify RX/TX
+ * communication - transmit a known frame, receive it back, compare - without
+ * a cable or link partner. Must be set before dmeth_port_start().
+ */
+
+dmod_dmeth_port_api(1.0, int, _set_loopback_mode, ( dmeth_instance_t instance, dmeth_loopback_mode_t mode ) );
+
 /* --- Data plane ---
  *
  * Exactly one memcpy each: DMA rx buffer -> caller's buffer, or caller's

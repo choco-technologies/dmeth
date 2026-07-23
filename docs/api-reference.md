@@ -112,5 +112,6 @@ rationale. Summary (`include/dmeth_port.h`):
 | `dmeth_port_stop(instance)`             | Disable MAC TX/RX + DMA TX/RX                                 |
 | `dmeth_port_get_link_status(instance)`  | Poll the PHY's link status bit over MDIO                      |
 | `dmeth_port_set_promiscuous_mode(instance, enable)` | Toggle the MAC's promiscuous filter               |
+| `dmeth_port_set_loopback_mode(instance, mode)` | Test-only: MAC- or PHY-internal loopback, no cable/link partner needed (see `tests/dmeth_test.c`) |
 | `dmeth_port_transmit_frame(instance, frame, len)` | Block until a TX descriptor is free, send one frame  |
 | `dmeth_port_receive_frame(instance, buffer, size, *received)` | Block until a frame is ready, copy it out |

@@ -25,6 +25,8 @@ int  dmeth_port_stop(dmeth_instance_t instance);
 bool dmeth_port_get_link_status(dmeth_instance_t instance);
 int  dmeth_port_set_promiscuous_mode(dmeth_instance_t instance, bool enable);
 
+int  dmeth_port_set_loopback_mode(dmeth_instance_t instance, dmeth_loopback_mode_t mode);
+
 int  dmeth_port_transmit_frame(dmeth_instance_t instance, const uint8_t* frame, size_t len);
 int  dmeth_port_receive_frame(dmeth_instance_t instance, uint8_t* buffer, size_t size, size_t* received);
 ```
@@ -95,6 +97,34 @@ Default ring depth is 10 RX + 10 TX descriptors x ~1524 B each (~30 KB
 total, `rx_buffer_count`/`tx_buffer_count` in `.ini` - see
 `docs/configuration.md`), matching dnx-rtos's own STM32F4x7 ETH driver
 default.
+
+## On-target testing: loopback
+
+`dmeth_port_set_loopback_mode()` exists so `tests/dmeth_test.c` can verify
+real RX/TX communication without a cable or link partner:
+
+- `dmeth_loopback_mode_mac` sets `MACCR.LM`, looping transmitted frames back
+  to the receive path *inside the MAC*, before the RMII pins - exercises the
+  DMA descriptors, chained-ring bookkeeping, RX ISR, RX-ready semaphore, and
+  the single `memcpy()` on each side, without needing a working PHY chip at
+  all.
+- `dmeth_loopback_mode_phy` instead sets the PHY's standard `BCR.Loopback`
+  bit (IEEE 802.3 clause 22, bit 14 - identical on every PHY, not a
+  vendor-specific register) over MDIO, looping *inside the PHY chip*, after
+  the RMII pins - additionally exercises the real RMII electrical
+  connection and the PHY itself, but needs a real, MDIO-reachable PHY.
+
+`tests/dmeth_test.c` is a `dmod_add_test()` binary, but it calls
+`dmeth_port_*` directly rather than going through `dmdrvi`/`dmeth` core -
+the same pattern `dmdma_test_port.c` uses for `dmdma_port`: linking only
+`dmeth_port_if` (headers + the generated dynamic-dispatch stubs, not the
+real `dmeth_port` executable) is enough, since Built-in API calls like these
+are resolved by the DMOD loader at runtime, not by the linker at build
+time - confirmed by `dmf-get`'s own dependency analysis picking up
+`dmeth_port` as a dependency of `test_dmeth` once the test calls into it.
+This means the loopback test needs no `dmdevfs`/`.ini` config at all and can
+run standalone on target; it does real MDIO/PHY-reset/autonegotiation
+timing in `dmeth_port_init()`, so it won't run in a host/simulator build.
 
 ## Known bugs (from the two real reference drivers this was built against) avoided here
 

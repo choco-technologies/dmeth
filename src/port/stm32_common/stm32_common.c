@@ -36,6 +36,7 @@
 #define PHY_REG_BCR                   0x00U
 #define PHY_REG_BSR                   0x01U
 #define PHY_BCR_RESTART_AUTONEG       (1U << 9)
+#define PHY_BCR_LOOPBACK              (1U << 14)
 #define PHY_BCR_AUTONEG_ENABLE        (1U << 12)
 #define PHY_BCR_RESET                 (1U << 15)
 #define PHY_BSR_LINK_STATUS           (1U << 2)
@@ -578,6 +579,50 @@ dmod_dmeth_port_api_declaration(1.0, int, _set_promiscuous_mode, ( dmeth_instanc
     else
         ETH->MACFFR &= ~ETH_MACFFR_PM;
     return 0;
+}
+
+/* ---- Loopback (test-only) ---- */
+
+/**
+ * @brief Enable/disable MAC- or PHY-level loopback for on-target testing.
+ *
+ * #dmeth_loopback_mode_mac sets MACCR.LM, looping transmitted frames back to
+ * the receive path inside the MAC itself, before the RMII pins - no PHY
+ * chip or cable needed. #dmeth_loopback_mode_phy instead sets the PHY's
+ * standard BCR.Loopback bit (IEEE 802.3 clause 22, bit 14 - same on every
+ * PHY) over MDIO, looping inside the PHY chip, after the RMII pins - this
+ * additionally exercises the real RMII electrical connection, but needs a
+ * real PHY chip to be present and MDIO-reachable. #dmeth_loopback_mode_none
+ * clears both. Must be called before dmeth_port_start().
+ *
+ * @param instance Target instance.
+ * @param mode     Loopback mode to apply.
+ * @return 0 on success, -EINVAL for a bad instance or unknown @p mode.
+ */
+dmod_dmeth_port_api_declaration(1.0, int, _set_loopback_mode, ( dmeth_instance_t instance, dmeth_loopback_mode_t mode ))
+{
+    if (!is_valid_instance(instance))
+        return -EINVAL;
+
+    eth_state_t *st = &s_eth[instance];
+
+    switch (mode)
+    {
+        case dmeth_loopback_mode_none:
+            ETH->MACCR &= ~ETH_MACCR_LM;
+            mdio_write(st->phy_address, PHY_REG_BCR, mdio_read(st->phy_address, PHY_REG_BCR) & ~PHY_BCR_LOOPBACK);
+            return 0;
+
+        case dmeth_loopback_mode_mac:
+            ETH->MACCR |= ETH_MACCR_LM;
+            return 0;
+
+        case dmeth_loopback_mode_phy:
+            return mdio_write(st->phy_address, PHY_REG_BCR, mdio_read(st->phy_address, PHY_REG_BCR) | PHY_BCR_LOOPBACK);
+
+        default:
+            return -EINVAL;
+    }
 }
 
 /* ---- Data plane ---- */
