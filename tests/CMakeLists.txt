@@ -4,6 +4,9 @@ set(DMOD_AUTHOR_NAME        "Patryk Kubiak")
 set(DMOD_STACK_SIZE         1024)
 set(DMOD_PRIORITY           0)
 
+# Path to the DMR file for this module - enables release package creation
+set(DMOD_DMR_PATH           ${CMAKE_SOURCE_DIR}/test_dmeth.dmr)
+
 dmod_add_test(${DMOD_MODULE_NAME} ${DMOD_MODULE_VERSION}
     dmeth_test.c
 )

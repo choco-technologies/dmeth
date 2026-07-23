@@ -8,3 +8,4 @@ $include https://github.com/choco-technologies/dmeth/releases/download/vlatest/v
 # real-world reference).
 dmeth      https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth-v<version>-<cpu_family>.zip
 dmeth_port https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth_port-v<version>-<cpu_family>.zip
+test_dmeth https://github.com/choco-technologies/dmeth/releases/download/v<version>/test_dmeth-v<version>-<cpu_family>.zip
