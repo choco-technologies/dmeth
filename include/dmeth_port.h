@@ -3,31 +3,57 @@
 
 #include "dmod_types.h"
 #include "dmeth_port_defs.h"
+#include "dmeth_types.h"
 
-/*
- * Declare architecture-independent port API functions here, following the
- * dmod_dmeth_port_api(version, return_type, _suffix, (args)) pattern,
- * e.g.:
+/* --- Capability query ---
  *
- *   dmod_dmeth_port_api(1.0, int, _configure, ( int some_arg ) );
- *
- * Each declaration here must have a matching *definition* in
- * src/port/<arch>/port.c (or a shared src/port/<arch>_common/ file), written
- * with the dmod_dmeth_port_api_declaration(...) macro instead:
- *
- *   dmod_dmeth_port_api_declaration(1.0, int, _configure, ( int some_arg ) )
- *   {
- *       ...
- *   }
- *
- * Note this is a *different* mechanism from the dmod_init()/dmod_deinit()
- * module lifecycle hooks already defined in port.c - don't declare `_init`/
- * `_deinit` here too, that name collides with the lifecycle hooks and (unlike
- * them) requires an explicit dmod_dmeth_port_api_declaration(...)
- * definition to avoid an undefined-reference link error.
- *
- * See dmfmc/include/dmfmc_port.h and dmfmc/src/port/stm32_common/stm32_common.c
- * for a fully worked example.
+ * Let the arch-independent core (dmeth_dmdrvi_create()) discover how many
+ * ETH peripherals this chip/family actually has, instead of assuming "just
+ * one" - same reasoning as dmdma_port_get_stream_count() in dmdma_port.h.
+ * Every STM32F4/F7 part supported today only has one, but core should
+ * validate `config->instance` against this rather than relying on
+ * dmeth_port_init() to reject an out-of-range instance number with no
+ * context on *why*.
  */
+
+dmod_dmeth_port_api(1.0, dmeth_instance_t, _get_instance_count, ( void ) );
+
+/* --- Lifecycle ---
+ *
+ * dmeth_port_init() does everything hardware-specific in one call: RMII pin
+ * mux selection, MAC/DMA/PHY bring-up, and allocating the RX/TX descriptor
+ * ring + packet buffers from the shared "dma" dmheap context (DTCM-backed,
+ * DMA-capable, non-cacheable - see docs/port-implementation.md). Unlike
+ * dmuart_port (one independent register per setting), dmeth's config is
+ * small enough that core hands over the whole dmeth_config_t at once.
+ */
+
+dmod_dmeth_port_api(1.0, int,  _init,   ( dmeth_instance_t instance, const dmeth_config_t* config ) );
+dmod_dmeth_port_api(1.0, int,  _deinit, ( dmeth_instance_t instance ) );
+
+/* --- Device identity / control plane ---
+ *
+ * Mirrors the DMDRVI_IOCTL_NET_* command set 1:1 - core's _ioctl() forwards
+ * each command straight to one of these.
+ */
+
+dmod_dmeth_port_api(1.0, int,  _set_mac_address, ( dmeth_instance_t instance, const uint8_t mac[DMETH_MAC_ADDR_LEN] ) );
+dmod_dmeth_port_api(1.0, int,  _get_mac_address, ( dmeth_instance_t instance, uint8_t mac[DMETH_MAC_ADDR_LEN] ) );
+dmod_dmeth_port_api(1.0, int,  _start, ( dmeth_instance_t instance ) );
+dmod_dmeth_port_api(1.0, int,  _stop,  ( dmeth_instance_t instance ) );
+dmod_dmeth_port_api(1.0, bool, _get_link_status, ( dmeth_instance_t instance ) );
+dmod_dmeth_port_api(1.0, int,  _set_promiscuous_mode, ( dmeth_instance_t instance, bool enable ) );
+
+/* --- Data plane ---
+ *
+ * Exactly one memcpy each: DMA rx buffer -> caller's buffer, or caller's
+ * buffer -> DMA tx buffer. Both block indefinitely (dmdrvi has no
+ * O_NONBLOCK/timeout concept to plumb through) - _receive_frame() waits on
+ * an internal semaphore posted from the RX ISR, _transmit_frame() waits for
+ * a free TX descriptor. Core (dmeth.c) never touches descriptors directly.
+ */
+
+dmod_dmeth_port_api(1.0, int, _transmit_frame, ( dmeth_instance_t instance, const uint8_t* frame, size_t len ) );
+dmod_dmeth_port_api(1.0, int, _receive_frame,  ( dmeth_instance_t instance, uint8_t* buffer, size_t size, size_t* received ) );
 
 #endif // DMETH_PORT_H

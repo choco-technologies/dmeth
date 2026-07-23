@@ -75,10 +75,14 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# To depend on another module's headers, use:
-#   dmod_link_modules(${DMOD_MODULE_NAME}
-#       other_module@1.0
-#   )
+# dmdrvi: the driver interface dmeth implements (_create/_open/_read/_write/
+#         _ioctl/_flush/_stat/_path_ready in src/dmeth.c).
+# dmini:  .ini config parsing (instance/rx_buffer_count/tx_buffer_count/
+#         mac_address/promiscuous/phy_address).
+dmod_link_modules(${DMOD_MODULE_NAME}
+    dmdrvi
+    dmini
+)
 
 add_subdirectory(src/port)
 target_link_libraries(${DMOD_MODULE_NAME} ${DMOD_MODULE_NAME}_port_if)
