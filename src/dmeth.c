@@ -6,6 +6,7 @@
 #include "dmdrvi.h"
 #include "dmdrvi_ioctl.h"
 #include "dmini.h"
+#include "dmnetif.h"
 #include <errno.h>
 #include <string.h>
 
@@ -17,9 +18,10 @@
  */
 struct dmdrvi_context
 {
-    uint32_t        magic;      /**< Magic number for validation */
-    dmeth_config_t  config;     /**< Configuration parameters */
-    bool            running;    /**< Whether DMDRVI_IOCTL_NET_START has been applied */
+    uint32_t          magic;      /**< Magic number for validation */
+    dmeth_config_t    config;     /**< Configuration parameters */
+    bool              running;    /**< Whether DMDRVI_IOCTL_NET_START has been applied */
+    dmnetif_iface_t   iface;      /**< Handle returned by dmnetif_register(), once the devfs path is known */
 };
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -170,6 +172,10 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _free, ( dmdrvi_context_t cont
 {
     if (is_valid_context(context))
     {
+        if (context->iface != NULL)
+        {
+            dmnetif_unregister(context->iface);
+        }
         if (context->running)
         {
             dmeth_port_stop(context->config.instance);
@@ -321,4 +327,26 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _stat, ( dmdrvi_context_t conte
     stat->size = 0;   /* Stream-like device, no fixed size */
     stat->mode = 0666; /* Read-write permissions */
     return 0;
+}
+
+dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _path_ready, ( dmdrvi_context_t context, const dmdrvi_dev_num_t* dev_num, const char* path ))
+{
+    if (!is_valid_context(context) || path == NULL)
+    {
+        DMOD_LOG_ERROR("Invalid parameters in dmeth_dmdrvi_path_ready\n");
+        return;
+    }
+
+    /* Bounded by dmeth_instance_t (uint8_t) - "eth255" always fits. */
+    char name[16];
+    Dmod_SnPrintf(name, sizeof(name), "eth%u", context->config.instance);
+
+    context->iface = dmnetif_register(name, path);
+    if (context->iface == NULL)
+    {
+        DMOD_LOG_ERROR("Failed to register %s (%s) with dmnetif\n", name, path);
+        return;
+    }
+
+    DMOD_LOG_INFO("Registered %s -> %s with dmnetif\n", name, path);
 }

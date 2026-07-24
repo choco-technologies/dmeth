@@ -75,13 +75,16 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-# dmdrvi: the driver interface dmeth implements (_create/_open/_read/_write/
-#         _ioctl/_flush/_stat/_path_ready in src/dmeth.c).
-# dmini:  .ini config parsing (instance/rx_buffer_count/tx_buffer_count/
-#         mac_address/promiscuous/phy_address).
+# dmdrvi:  the driver interface dmeth implements (_create/_open/_read/_write/
+#          _ioctl/_flush/_stat/_path_ready in src/dmeth.c).
+# dmini:   .ini config parsing (instance/rx_buffer_count/tx_buffer_count/
+#          mac_address/promiscuous/phy_address).
+# dmnetif: registered as a named network interface ("ethN") from
+#          dmeth_dmdrvi_path_ready() once dmdevfs reports the device's path.
 dmod_link_modules(${DMOD_MODULE_NAME}
     dmdrvi
     dmini
+    dmnetif
 )
 
 add_subdirectory(src/port)
