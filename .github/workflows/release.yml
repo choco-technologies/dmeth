@@ -74,7 +74,17 @@ jobs:
           cmake --build .
 
           echo "Build completed for CPU family: ${CPU_FAMILY}"
-          ls -la packages/ || echo "No packages directory"
+          ls -la packages/
+
+      - name: Verify dmeth_port module files
+        run: |
+          set -e
+          echo "Checking for dmeth_port module files for ${{ matrix.cpu_family }}..."
+          ls -lh build_$BUILD_NAME/dmf/
+          test -f build_$BUILD_NAME/dmf/dmeth_port.dmf
+          test -f build_$BUILD_NAME/dmf/dmeth_port_version.txt
+          test -d build_$BUILD_NAME/packages/dmeth_port
+          echo "Module files present for ${{ matrix.cpu_family }}"
 
       - name: Add release notes and create release archives
         run: |

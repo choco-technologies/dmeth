@@ -39,10 +39,13 @@ jobs:
           test -f build/dmf/test_dmeth.dmf
           echo "Module files present"
 
-      - name: Run tests with dmod_loader
-        run: |
-          export DMOD_DMF_DIR=$(pwd)/build/dmf
-          dmod_loader build/dmf/test_dmeth.dmf
+      # test_dmeth calls dmeth_port_* directly against real ETH silicon (MAC
+      # loopback) - see the top comment in tests/dmeth_test.c - so it depends
+      # on the real, architecture-specific dmeth_port module at load time and
+      # cannot run under dmod_loader on this native x86_64 runner (dmeth_port
+      # has no x86_64 port, and there is no ETH hardware here regardless).
+      # Only compiling it is verified above; actually running it is an
+      # on-target step, not part of this job.
 
   discover-cpu-families:
     name: Discover CPU Families
