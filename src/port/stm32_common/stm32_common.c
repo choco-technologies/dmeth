@@ -30,6 +30,14 @@
 
 #define PHY_MDIO_TIMEOUT_ITERATIONS   200000U
 
+/* How long dmeth_port_receive_frame() waits on the RX semaphore before
+ * re-examining the descriptor ring anyway. The semaphore is only a wake-up
+ * hint (see dmeth_port_receive_frame()), so this bounds how long a caller
+ * can sit blocked on a post that was coalesced or dropped. It is not a
+ * receive timeout: the function still blocks until a frame actually
+ * arrives. */
+#define DMETH_RX_WAIT_TIMEOUT_MS      100
+
 /* IEEE 802.3 clause 22 standard PHY registers/bits (same on every PHY,
  * including the default LAN8742A - vendor-specific registers are handled
  * separately below). */
@@ -684,13 +692,15 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
 /**
  * @brief Receive one Ethernet frame, blocking until one is ready.
  *
- * Waits (indefinitely, same rationale as dmeth_port_transmit_frame()) on the
- * RX-ready semaphore posted by the ISR, then `memcpy()`'s
- * `min(frame_len, size)` bytes from the ready descriptor's buffer into
- * @p buffer (the only copy on this path, truncating like `recvfrom()` if
- * the caller's buffer is smaller than the frame), gives the descriptor back
- * to the DMA, and pokes `DMARPDR` if the DMA had stalled on a
- * buffer-unavailable condition.
+ * Blocks (indefinitely, same rationale as dmeth_port_transmit_frame()) until
+ * the next descriptor in the ring is CPU-owned, using the ISR's RX semaphore
+ * only as a wake-up hint - see the comment in the body for why the descriptor
+ * OWN bit, not the semaphore count, is the authority here. Then `memcpy()`'s
+ * `min(frame_len, size)` bytes from that descriptor's buffer into @p buffer
+ * (the only copy on this path, truncating like `recvfrom()` if the caller's
+ * buffer is smaller than the frame), gives the descriptor back to the DMA,
+ * and pokes `DMARPDR` if the DMA had stalled on a buffer-unavailable
+ * condition.
  *
  * @param instance      Target instance (must be started via dmeth_port_start()).
  * @param buffer        Destination buffer for the received frame.
@@ -698,8 +708,7 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
  * @param[out] received Set to the number of bytes actually copied into
  *                      @p buffer.
  * @return 0 on success, -EINVAL for bad arguments, -EIO if the instance
- *         isn't initialized/running, -EAGAIN in the (should-not-happen)
- *         case where the woken descriptor is still DMA-owned.
+ *         isn't initialized/running.
  */
 dmod_dmeth_port_api_declaration(1.0, int, _receive_frame, ( dmeth_instance_t instance, uint8_t* buffer, size_t size, size_t* received ))
 {
@@ -710,17 +719,26 @@ dmod_dmeth_port_api_declaration(1.0, int, _receive_frame, ( dmeth_instance_t ins
     if (!st->initialized || !st->running)
         return -EIO;
 
-    /* Blocks indefinitely until the ISR posts a ready frame - same policy
-     * as _transmit_frame() above, for the same reason. */
-    dmosi_semaphore_wait(st->rx_sem, 1, -1);
-
     eth_dma_desc_t *desc = &st->rx_desc[st->rx_tail];
-    if (desc->status & ETH_DMA_DESC_OWN)
+
+    /* Blocks until this descriptor is ours - same policy as _transmit_frame()
+     * above, for the same reason.
+     *
+     * The descriptor's OWN bit, not the semaphore count, decides when a frame
+     * is here. The two do not correspond one-to-one: the ISR posts once per
+     * *interrupt*, but the DMA can fill several descriptors before that
+     * interrupt is serviced, so one post can cover several frames - and,
+     * conversely, a post is silently dropped once the semaphore saturates at
+     * rx_buffer_count. Treating the count as an exact tally of ready frames
+     * therefore both under- and over-counts: descriptors would be left
+     * unreclaimed until the ring filled and the DMA stalled on RBUS.
+     *
+     * Waiting with a timeout and re-checking OWN makes the semaphore a pure
+     * wake-up hint, which is all it can reliably be: a coalesced or dropped
+     * post costs one extra wait, never a permanent stall. */
+    while ((desc->status & ETH_DMA_DESC_OWN) != 0)
     {
-        /* Shouldn't happen (the semaphore count tracks ready descriptors
-         * exactly), but don't hand back garbage if it ever does. */
-        *received = 0;
-        return -EAGAIN;
+        dmosi_semaphore_wait(st->rx_sem, 1, DMETH_RX_WAIT_TIMEOUT_MS);
     }
 
     uint32_t frame_len = (desc->status & ETH_DMARxDesc_FL_Msk) >> ETH_DMARxDesc_FL_Pos;
