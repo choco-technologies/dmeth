@@ -42,17 +42,22 @@
 #define PHY_BSR_LINK_STATUS           (1U << 2)
 #define PHY_BSR_AUTONEG_COMPLETE      (1U << 5)
 
-/* LAN8742A-specific "Special Control/Status Register" (register 31) -
- * bit positions taken from dnx-rtos's own Configtool metadata for this exact
- * chip (config/arch/stm32f7/eth_flags.h: __ETH_PHY_SR__=31,
- * __ETH_PHY_SPEED_STATUS_BM__=0x0004, __ETH_PHY_DUPLEX_STATUS_BM__=0x0010),
- * carried over here since dnx-rtos itself never actually reads them (see
- * docs/port-implementation.md). Polarity (1=100M/full vs 1=10M/half) is
- * inferred from the bit names, NOT independently verified against the
- * LAN8742A datasheet - double-check against it before trusting this on
- * hardware with a different PHY. */
+/* LAN8742A-specific "Special Control/Status Register" (register 31),
+ * bits [4:2] HCDSPEED - verified against a real board (see below), NOT
+ * two independent status bits as the dnx-rtos-derived constants this
+ * replaced assumed:
+ *   001 = 10M half   101 = 10M full
+ *   010 = 100M half  110 = 100M full
+ * so bit 3 alone distinguishes 100M from 10M regardless of duplex, and
+ * bit 4 alone distinguishes full from half regardless of speed - bit 2
+ * is NOT part of either check (it only differs between the two 10M rows).
+ * Confirmed live on an STM32F746G-DISCO: after a successful 100M/full
+ * autoneg, register 31 read back 0x1058 (bits 4,3 set, bit 2 clear) - the
+ * previous bit-2-only speed check misread this as 10M, leaving MACCR.FES
+ * clear while the link was actually running at 100M, a MAC/PHY speed
+ * mismatch that silently discarded every received frame. */
 #define PHY_REG_LAN8742A_SPECIAL_STATUS   31U
-#define PHY_LAN8742A_SPEED_100M           (1U << 2)
+#define PHY_LAN8742A_SPEED_100M           (1U << 3)
 #define PHY_LAN8742A_DUPLEX_FULL          (1U << 4)
 
 typedef struct eth_dma_desc

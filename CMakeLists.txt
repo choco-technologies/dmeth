@@ -81,10 +81,14 @@ target_include_directories(${DMOD_MODULE_NAME}_if INTERFACE
 #          mac_address/promiscuous/phy_address).
 # dmnetif: registered as a named network interface ("ethN") from
 #          dmeth_dmdrvi_path_ready() once dmdevfs reports the device's path.
+# dmroute: dmnetif.h (>=1.0) includes dmroute.h for dmroute_addr_t (used by
+#          dmnetif_set_ip_address()/_set_netmask() etc) - header-only need,
+#          dmeth itself never calls dmroute directly.
 dmod_link_modules(${DMOD_MODULE_NAME}
     dmdrvi
     dmini
     dmnetif
+    dmroute
 )
 
 add_subdirectory(src/port)
