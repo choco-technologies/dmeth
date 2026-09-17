@@ -28,7 +28,7 @@ jobs:
           # never touches src/port/*/port.c - safe to build natively here
           # regardless of which CPU family the port defaults to.
           cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64
-          cmake --build . --target dmeth test_dmeth
+          cmake --build . --target dmeth test_dmeth test_dmeth_app
 
       - name: Verify module files
         run: |
@@ -37,6 +37,7 @@ jobs:
           test -f build/dmf/dmeth.dmf
           test -f build/dmf/dmeth_version.txt
           test -f build/dmf/test_dmeth.dmf
+          test -f build/dmf/test_dmeth_app.dmf
           echo "Module files present"
 
       # test_dmeth calls dmeth_port_* directly against real ETH silicon (MAC
@@ -44,8 +45,12 @@ jobs:
       # on the real, architecture-specific dmeth_port module at load time and
       # cannot run under dmod_loader on this native x86_64 runner (dmeth_port
       # has no x86_64 port, and there is no ETH hardware here regardless).
-      # Only compiling it is verified above; actually running it is an
-      # on-target step, not part of this job.
+      # test_dmeth_app instead only depends on dmdrvi/dmeth headers (it talks
+      # to /dev/dmeth0 through the ordinary VFS interface), so it builds here
+      # too, but still needs a real running system with dmeth+dmeth_port
+      # loaded and configured to actually run against. Only compiling both is
+      # verified above; actually running either is an on-target step, not
+      # part of this job.
 
   discover-cpu-families:
     name: Discover CPU Families

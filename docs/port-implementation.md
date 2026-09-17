@@ -125,6 +125,21 @@ time - confirmed by `dmf-get`'s own dependency analysis picking up
 This means the loopback test needs no `dmdevfs`/`.ini` config at all and can
 run standalone on target; it does real MDIO/PHY-reset/autonegotiation
 timing in `dmeth_port_init()`, so it won't run in a host/simulator build.
+It also uses a hand-built `dmeth_config_t` rather than a board's real
+`.ini`, so a pass there confirms the port layer/silicon works, not that any
+particular board's shipped configuration does.
+
+`tests/dmeth_test_app.c` is the device-node counterpart, the same split
+`dmdma_test_dev.c` uses for `dmdma`: a `dmod_add_executable()` application
+that opens `/dev/dmeth0` (or whichever instance) through the ordinary VFS
+file interface (`Dmod_FileOpen`/`_Ioctl`/`_Write`/`_Read`/`_Close`) and
+drives it purely through `dmdrvi_ioctl()` commands - `DMETH_IOCTL_SET_
+LOOPBACK_MODE` (see `dmeth_ioctl.h`) plus the standard `DMDRVI_IOCTL_NET_
+START`/`_STOP`. This needs a fully running system with `dmeth`+`dmeth_port`
+already loaded and configured from the board's actual `eth0.ini` (see
+`configs/board/`), so a pass confirms that specific board's real
+configuration - not a synthetic one - produces working MAC and PHY
+loopback.
 
 ## Known bugs (from the two real reference drivers this was built against) avoided here
 

@@ -224,13 +224,23 @@ another architecture. Port-specific files:
 
 ## Testing
 
-`tests/dmeth_test.c` is an on-target `dmod_add_test()` binary. It calls
-`dmeth_port_*` directly (bypassing `dmeth` core/`dmdrvi` and needing no
-`dmdevfs`/`.ini` config at all), and exercises the MAC-internal and
-PHY-internal loopback modes: transmit a known frame, receive it back over
-loopback, and compare byte-for-byte. Because it does real MDIO/PHY-reset/
-autonegotiation timing, it only runs on real hardware, not in a
-host/simulator build.
+Both on-target tests exercise the same MAC-internal and PHY-internal
+loopback modes - transmit a known frame, receive it back over loopback, and
+compare byte-for-byte - but at different layers, and only run on real
+hardware (real MDIO/PHY-reset/autonegotiation timing, no host/simulator
+build):
+
+- `tests/dmeth_test.c` is a `dmod_add_test()` binary that calls
+  `dmeth_port_*` directly, bypassing `dmeth` core/`dmdrvi` entirely and
+  needing no `dmdevfs`/`.ini` config - it verifies the port layer/silicon
+  work with a hand-built config.
+- `tests/dmeth_test_app.c` is a `dmod_add_executable()` application
+  (`dmeth_test_app /dev/dmeth0`) that opens the real device node through the
+  ordinary VFS interface and drives it via `dmdrvi_ioctl()` (including the
+  new `DMETH_IOCTL_SET_LOOPBACK_MODE`), exercising the full
+  `dmdevfs`/`dmdrvi`/`dmeth` stack with the board's actual `.ini`
+  configuration applied - it verifies that specific board's real
+  configuration (not a synthetic one) works.
 
 ## Dependencies
 
@@ -283,11 +293,14 @@ dmeth/
 │       └── stm32f7/
 ├── tests/
 │   ├── CMakeLists.txt
-│   └── dmeth_test.c            # On-target loopback test
+│   ├── dmeth_test.c            # On-target loopback test (port-direct)
+│   └── dmeth_test_app.c        # On-target loopback test (device-node, real .ini config)
 ├── CMakeLists.txt
 ├── Makefile
 ├── dmeth.dmr
 ├── dmeth_port.dmr
+├── test_dmeth.dmr
+├── test_dmeth_app.dmr
 └── manifest.dmm
 ```
 

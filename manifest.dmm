@@ -6,6 +6,11 @@ $include https://github.com/choco-technologies/dmeth/releases/download/vlatest/v
 # the release workflow packages this repo per DMOD_CPU_FAMILY, not per full
 # architecture (see dmfmc/manifest.dmm or dmuart/manifest.dmm for the
 # real-world reference).
-dmeth      https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth-v<version>-<cpu_family>.zip
-dmeth_port https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth_port-v<version>-<cpu_family>.zip
-test_dmeth https://github.com/choco-technologies/dmeth/releases/download/v<version>/test_dmeth-v<version>-<cpu_family>.zip
+dmeth          https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth-v<version>-<cpu_family>.zip
+dmeth_port     https://github.com/choco-technologies/dmeth/releases/download/v<version>/dmeth_port-v<version>-<cpu_family>.zip
+test_dmeth     https://github.com/choco-technologies/dmeth/releases/download/v<version>/test_dmeth-v<version>-<cpu_family>.zip
+
+# On-target device-node loopback diagnostic (see tests/) - its own DMOD
+# module/package, same as test_dmeth above, not a copy of the main module's
+# zip.
+test_dmeth_app https://github.com/choco-technologies/dmeth/releases/download/v<version>/test_dmeth_app-v<version>-<cpu_family>.zip
