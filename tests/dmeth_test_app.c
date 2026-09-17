@@ -4,7 +4,6 @@
 #include "dmdrvi_ioctl.h"
 #include <stdint.h>
 #include <stdbool.h>
-#include <string.h>
 
 /**
  * @brief dmeth_test_app - on-target MAC/PHY loopback smoke test, going
@@ -66,10 +65,19 @@ static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, con
             Dmod_Printf("ERROR: received %u of %u byte(s)\n", (unsigned)received, (unsigned)sizeof(tx_frame));
             ok = false;
         }
-        else if (memcmp(tx_frame, rx_frame, sizeof(tx_frame)) != 0)
+        else
         {
-            Dmod_Printf("ERROR: received frame does not match transmitted frame\n");
-            ok = false;
+            /* No memcmp() - test_dmeth_app links without libc, same reason
+             * tests/dmeth_test.c compares byte-by-byte instead. */
+            for (size_t i = 0; i < sizeof(tx_frame); i++)
+            {
+                if (rx_frame[i] != tx_frame[i])
+                {
+                    Dmod_Printf("ERROR: received frame does not match transmitted frame\n");
+                    ok = false;
+                    break;
+                }
+            }
         }
     }
 
