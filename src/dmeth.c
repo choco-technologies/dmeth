@@ -18,10 +18,11 @@
  */
 struct dmdrvi_context
 {
-    uint32_t          magic;      /**< Magic number for validation */
-    dmeth_config_t    config;     /**< Configuration parameters */
-    bool              running;    /**< Whether DMDRVI_IOCTL_NET_START has been applied */
-    dmnetif_iface_t   iface;      /**< Handle returned by dmnetif_register(), once the devfs path is known */
+    uint32_t              magic;      /**< Magic number for validation */
+    dmeth_config_t        config;     /**< Configuration parameters */
+    bool                  running;    /**< Whether DMDRVI_IOCTL_NET_START has been applied */
+    dmnetif_iface_t       iface;      /**< Handle returned by dmnetif_register(), once the devfs path is known */
+    dmeth_loopback_mode_t loopback_mode; /**< Last mode applied via DMETH_IOCTL_SET_LOOPBACK_MODE (test-only, see dmeth_ioctl.h) */
 };
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -294,6 +295,21 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _ioctl, ( dmdrvi_context_t cont
         case DMETH_IOCTL_GET_PROMISCUOUS_MODE:
         {
             *(bool *)arg = context->config.promiscuous;
+            return 0;
+        }
+
+        case DMETH_IOCTL_SET_LOOPBACK_MODE:
+        {
+            dmeth_loopback_mode_t mode = *(const dmeth_loopback_mode_t *)arg;
+            int ret = dmeth_port_set_loopback_mode(context->config.instance, mode);
+            if (ret == 0)
+                context->loopback_mode = mode;
+            return ret;
+        }
+
+        case DMETH_IOCTL_GET_LOOPBACK_MODE:
+        {
+            *(dmeth_loopback_mode_t *)arg = context->loopback_mode;
             return 0;
         }
 

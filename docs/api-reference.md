@@ -49,6 +49,8 @@ switch - see the comment in `dmeth_ioctl.h`.
 |--------------------------------------------|------------------|-----------------|------------------------------------|
 | `DMETH_IOCTL_SET_PROMISCUOUS_MODE`         | in               | `const bool*`  | Enable/disable the MAC's promiscuous filter |
 | `DMETH_IOCTL_GET_PROMISCUOUS_MODE`         | out              | `bool*`        | Read the current promiscuous filter state   |
+| `DMETH_IOCTL_SET_LOOPBACK_MODE`            | in               | `const dmeth_loopback_mode_t*` | Test-only: enable MAC/PHY internal loopback (must be set before `DMDRVI_IOCTL_NET_START`) - see `tests/dmeth_test.c` |
+| `DMETH_IOCTL_GET_LOOPBACK_MODE`            | out              | `dmeth_loopback_mode_t*` | Read the loopback mode last applied via `DMETH_IOCTL_SET_LOOPBACK_MODE` |
 
 ### Bring-up sequence
 

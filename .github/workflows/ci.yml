@@ -39,13 +39,14 @@ jobs:
           test -f build/dmf/test_dmeth.dmf
           echo "Module files present"
 
-      # test_dmeth calls dmeth_port_* directly against real ETH silicon (MAC
-      # loopback) - see the top comment in tests/dmeth_test.c - so it depends
-      # on the real, architecture-specific dmeth_port module at load time and
-      # cannot run under dmod_loader on this native x86_64 runner (dmeth_port
-      # has no x86_64 port, and there is no ETH hardware here regardless).
-      # Only compiling it is verified above; actually running it is an
-      # on-target step, not part of this job.
+      # test_dmeth only depends on dmdrvi/dmeth headers (it talks to
+      # /dev/dmeth0 through the ordinary VFS interface, not dmeth_port
+      # directly - see the top comment in tests/dmeth_test.c), so it builds
+      # fine natively here regardless of CPU family. It still needs a real
+      # running system with dmeth+dmeth_port loaded and configured (and real
+      # ETH silicon behind it) to actually run against. Only compiling it is
+      # verified above; actually running it is an on-target step, not part
+      # of this job.
 
   discover-cpu-families:
     name: Discover CPU Families

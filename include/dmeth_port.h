@@ -46,7 +46,8 @@ dmod_dmeth_port_api(1.0, int,  _set_promiscuous_mode, ( dmeth_instance_t instanc
 
 /* --- Loopback (test-only) ---
  *
- * Lets an on-target test (see tests/dmeth_test.c) verify RX/TX
+ * Reachable from an on-target test (tests/dmeth_test.c) via core's
+ * DMETH_IOCTL_SET_LOOPBACK_MODE (dmeth_ioctl.h), to verify RX/TX
  * communication - transmit a known frame, receive it back, compare - without
  * a cable or link partner. Must be set before dmeth_port_start().
  */

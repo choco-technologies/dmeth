@@ -114,17 +114,20 @@ real RX/TX communication without a cable or link partner:
   the RMII pins - additionally exercises the real RMII electrical
   connection and the PHY itself, but needs a real, MDIO-reachable PHY.
 
-`tests/dmeth_test.c` is a `dmod_add_test()` binary, but it calls
-`dmeth_port_*` directly rather than going through `dmdrvi`/`dmeth` core -
-the same pattern `dmdma_test_port.c` uses for `dmdma_port`: linking only
-`dmeth_port_if` (headers + the generated dynamic-dispatch stubs, not the
-real `dmeth_port` executable) is enough, since Built-in API calls like these
-are resolved by the DMOD loader at runtime, not by the linker at build
-time - confirmed by `dmf-get`'s own dependency analysis picking up
-`dmeth_port` as a dependency of `test_dmeth` once the test calls into it.
-This means the loopback test needs no `dmdevfs`/`.ini` config at all and can
-run standalone on target; it does real MDIO/PHY-reset/autonegotiation
-timing in `dmeth_port_init()`, so it won't run in a host/simulator build.
+`tests/dmeth_test.c` is a `dmod_add_executable()` application (not a
+`dmod_add_test()`/`DMOD_TEST_STEP` unit test - it needs `argv` and is meant
+to be run manually from the shell), the same shape `dmdma_test_dev.c` uses
+for `dmdma`: it opens `/dev/dmeth0` (or whichever instance is passed as
+`argv[1]`) through the ordinary VFS file interface (`Dmod_FileOpen`/`_Ioctl`/
+`_Write`/`_Read`/`_Close`) and drives it purely through `dmdrvi_ioctl()`
+commands - `DMETH_IOCTL_SET_LOOPBACK_MODE` (see `dmeth_ioctl.h`) plus the
+standard `DMDRVI_IOCTL_NET_START`/`_STOP`. This needs a fully running system
+with `dmeth`+`dmeth_port` already loaded and configured from the board's
+actual `eth0.ini` (see `configs/board/`), so a pass confirms that specific
+board's real configuration - not a synthetic one - produces working MAC and
+PHY loopback. It does real MDIO/PHY-reset/autonegotiation timing (in
+`dmeth_port_init()`, underneath `dmeth_dmdrvi_create()`), so it won't run in
+a host/simulator build.
 
 ## Known bugs (from the two real reference drivers this was built against) avoided here
 
