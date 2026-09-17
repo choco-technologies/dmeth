@@ -1,123 +1,128 @@
-#define DMOD_ENABLE_REGISTRATION ON
-#include "dmod_test.h"
-#include "dmeth.h"
-#include "dmeth_types.h"
+#include "dmod.h"
 #include "dmeth_ioctl.h"
-#include "dmeth_port.h"
-#include "dmdrvi.h"
+#include "dmeth_types.h"
 #include "dmdrvi_ioctl.h"
-#include <string.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 /**
- * This test binary calls dmeth_port_* directly (bypassing dmeth core/dmdrvi
- * entirely), the same way dmdma_test_port.c does for dmdma_port - it links
- * dmeth_port_if (headers + the generated dynamic-dispatch stubs), not the
- * real dmeth_port executable, so it needs no dmdevfs/dmini config and can
- * run standalone on target. This is an on-target hardware test: MAC
- * loopback needs real ETH silicon and does real MDIO/PHY-reset/
- * autonegotiation timing (see dmeth_port_init()), so it will not run in a
- * host/simulator build.
+ * @brief dmeth_test - on-target MAC/PHY loopback smoke test, going through
+ *        the real device node dmdevfs exposes for dmeth.
+ *
+ * Usage:
+ *   dmeth_test <path-to-dmeth-device>
+ *   e.g. dmeth_test /dev/dmeth0
+ *
+ * Opens the path with the ordinary VFS file interface (open/ioctl/write/
+ * read/close) and drives it purely through dmdrvi_ioctl() commands,
+ * exercising the real production path end to end: dmdevfs must already
+ * have mounted and configured dmeth (i.e. the board's own eth0.ini, see
+ * configs/board/) for this path to exist at all. A pass here means the
+ * board's actual shipped configuration (phy_address, buffer counts, RMII
+ * pin mux, ...) - not a synthetic one - produces a working MAC and a
+ * working PHY.
  */
 
-DMOD_TEST_STEP(dmeth_private_ioctl_commands_are_in_the_reserved_custom_range)
-{
-    DMOD_TEST_EXPECT(DMETH_IOCTL_SET_PROMISCUOUS_MODE >= DMDRVI_IOCTL_CUSTOM_BASE);
-    DMOD_TEST_EXPECT(DMETH_IOCTL_GET_PROMISCUOUS_MODE >= DMDRVI_IOCTL_CUSTOM_BASE);
-    DMOD_TEST_EXPECT(DMETH_IOCTL_SET_PROMISCUOUS_MODE != DMETH_IOCTL_GET_PROMISCUOUS_MODE);
-}
+#define DMETH_TEST_FRAME_BYTES    64U
 
-DMOD_TEST_STEP(dmeth_mac_addr_len_matches_dmdrvi_net_type)
+static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, const char *mode_name)
 {
-    /* dmeth_config_t.mac_address and dmdrvi_net_mac_addr_t.addr are copied
-     * between each other byte-for-byte in dmeth_dmdrvi_ioctl() - they must
-     * agree on length. */
-    DMOD_TEST_EXPECT_EQ(DMETH_MAC_ADDR_LEN, (size_t)DMDRVI_NET_MAC_ADDR_LEN);
-    DMOD_TEST_EXPECT_EQ(sizeof(((dmeth_config_t *)0)->mac_address), (size_t)DMDRVI_NET_MAC_ADDR_LEN);
-}
+    Dmod_Printf("-- %s loopback --\n", mode_name);
 
-/**
- * @brief Shared body for the loopback tx/rx roundtrip steps below - transmit
- *        a frame with the given loopback mode enabled and verify it comes
- *        back byte-for-byte. Only the loopback mode differs between the MAC
- *        and PHY variants (see dmeth_loopback_mode_t in dmeth_types.h), so
- *        both DMOD_TEST_STEP()s below just call this with their mode.
- *
- * See dmeth_port_set_loopback_mode() / docs/port-implementation.md for how
- * each mode routes TX back to RX.
- *
- * @param mode Loopback mode to exercise (mac or phy).
- */
-static void loopback_tx_rx_roundtrip(dmeth_loopback_mode_t mode)
-{
-    dmeth_config_t config;
-    memset(&config, 0, sizeof(config));
-    config.instance        = 0;
-    config.rx_buffer_count = 4;
-    config.tx_buffer_count = 4;
-    config.phy_address     = 0;
-
-    /* This step verifies loopback tx/rx communication, not
-     * dmeth_port_init() itself - a nonzero return here (e.g. -EBUSY because
-     * dmeth core already owns this instance) isn't a communication defect,
-     * so it must not fail this test. Warn and skip instead. */
-    int init_ret = dmeth_port_init(0, &config);
-    if (init_ret != 0)
+    if (Dmod_Ioctl(handle, DMETH_IOCTL_SET_LOOPBACK_MODE, &mode) != 0)
     {
-        DMOD_LOG_WARN("dmeth_port_init() returned %d - instance already in use or hardware not ready; "
-                      "skipping loopback roundtrip check\n", init_ret);
-        return;
+        Dmod_Printf("ERROR: DMETH_IOCTL_SET_LOOPBACK_MODE(%s) failed\n", mode_name);
+        return false;
     }
 
-    DMOD_TEST_EXPECT_EQ(dmeth_port_set_loopback_mode(0, mode), 0);
-    DMOD_TEST_EXPECT_EQ(dmeth_port_start(0), 0);
+    if (Dmod_Ioctl(handle, DMDRVI_IOCTL_NET_START, NULL) != 0)
+    {
+        Dmod_Printf("ERROR: DMDRVI_IOCTL_NET_START failed\n");
+        return false;
+    }
 
-    uint8_t tx_frame[64];
+    uint8_t tx_frame[DMETH_TEST_FRAME_BYTES];
     for (size_t i = 0; i < sizeof(tx_frame); i++)
         tx_frame[i] = (uint8_t)i;
 
-    DMOD_TEST_EXPECT_EQ(dmeth_port_transmit_frame(0, tx_frame, sizeof(tx_frame)), 0);
+    bool ok = true;
 
-    uint8_t rx_frame[64] = {0};
-    size_t received = 0;
-    DMOD_TEST_EXPECT_EQ(dmeth_port_receive_frame(0, rx_frame, sizeof(rx_frame), &received), 0);
-    DMOD_TEST_EXPECT_EQ(received, sizeof(tx_frame));
-
-    bool frame_matches = true;
-    for (size_t i = 0; i < sizeof(tx_frame); i++)
+    size_t written = Dmod_FileWrite(tx_frame, 1, sizeof(tx_frame), handle);
+    if (written != sizeof(tx_frame))
     {
-        if (rx_frame[i] != tx_frame[i])
+        Dmod_Printf("ERROR: wrote %u of %u byte(s)\n", (unsigned)written, (unsigned)sizeof(tx_frame));
+        ok = false;
+    }
+
+    uint8_t rx_frame[DMETH_TEST_FRAME_BYTES] = {0};
+    if (ok)
+    {
+        size_t received = Dmod_FileRead(rx_frame, 1, sizeof(rx_frame), handle);
+        if (received != sizeof(tx_frame))
         {
-            frame_matches = false;
-            break;
+            Dmod_Printf("ERROR: received %u of %u byte(s)\n", (unsigned)received, (unsigned)sizeof(tx_frame));
+            ok = false;
+        }
+        else
+        {
+            /* No memcmp() - test_dmeth links without libc, so the frame is
+             * compared byte-by-byte instead. */
+            for (size_t i = 0; i < sizeof(tx_frame); i++)
+            {
+                if (rx_frame[i] != tx_frame[i])
+                {
+                    Dmod_Printf("ERROR: received frame does not match transmitted frame\n");
+                    ok = false;
+                    break;
+                }
+            }
         }
     }
-    DMOD_TEST_EXPECT(frame_matches);
 
-    dmeth_port_set_loopback_mode(0, dmeth_loopback_mode_none);
-    dmeth_port_stop(0);
-    dmeth_port_deinit(0);
+    dmeth_loopback_mode_t none = dmeth_loopback_mode_none;
+    Dmod_Ioctl(handle, DMETH_IOCTL_SET_LOOPBACK_MODE, &none);
+    Dmod_Ioctl(handle, DMDRVI_IOCTL_NET_STOP, NULL);
+
+    Dmod_Printf("%s: %s loopback roundtrip\n", ok ? "PASS" : "FAIL", mode_name);
+    return ok;
 }
 
-/**
- * @brief MAC-internal loopback: MACCR.LM loops TX straight to RX inside the
- *        MAC, before the RMII pins - exercises the whole data path (DMA
- *        descriptors, chained-ring bookkeeping, RX ISR, RX-ready semaphore,
- *        the single memcpy on each side) without needing a cable, link
- *        partner, or even a working PHY chip.
- */
-DMOD_TEST_STEP(dmeth_mac_loopback_tx_rx_roundtrip)
+int main(int argc, char *argv[])
 {
-    loopback_tx_rx_roundtrip(dmeth_loopback_mode_mac);
-}
+    Dmod_Printf("\n=== DMETH Device-Node Loopback Test ===\n\n");
 
-/**
- * @brief PHY loopback: the PHY's standard BCR.Loopback bit (IEEE 802.3
- *        clause 22, bit 14 - same on every PHY) loops TX back to RX inside
- *        the PHY chip itself, after the RMII pins - additionally exercises
- *        the real RMII electrical connection and a reachable PHY over MDIO,
- *        still without needing a cable or link partner.
- */
-DMOD_TEST_STEP(dmeth_phy_loopback_tx_rx_roundtrip)
-{
-    loopback_tx_rx_roundtrip(dmeth_loopback_mode_phy);
+    if (argc < 2)
+    {
+        Dmod_Printf("Usage: dmeth_test <path-to-dmeth-device>\n");
+        Dmod_Printf("e.g. dmeth_test /dev/dmeth0\n\n");
+        Dmod_Printf("Opens the given device node through dmdevfs/dmdrvi and verifies\n");
+        Dmod_Printf("a MAC-internal and a PHY-internal loopback frame roundtrip\n");
+        Dmod_Printf("through it, using the board's real configured settings.\n\n");
+        return -1;
+    }
+
+    const char *path = argv[1];
+
+    Dmod_Printf("Opening '%s'...\n", path);
+    void *handle = Dmod_FileOpen(path, "r+");
+    if (handle == NULL)
+    {
+        Dmod_Printf("ERROR: could not open '%s' (is dmdevfs mounted and dmeth configured?)\n", path);
+        return -1;
+    }
+
+    bool mac_ok = run_loopback_roundtrip(handle, dmeth_loopback_mode_mac, "MAC");
+    bool phy_ok = run_loopback_roundtrip(handle, dmeth_loopback_mode_phy, "PHY");
+
+    Dmod_FileClose(handle);
+
+    if (mac_ok && phy_ok)
+    {
+        Dmod_Printf("\nPASS: '%s' - MAC and PHY loopback both roundtripped correctly\n\n", path);
+        return 0;
+    }
+
+    Dmod_Printf("\nFAIL: '%s' - configuration does not pass loopback (MAC %s, PHY %s)\n\n",
+                path, mac_ok ? "ok" : "FAILED", phy_ok ? "ok" : "FAILED");
+    return -1;
 }
