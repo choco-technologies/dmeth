@@ -25,6 +25,12 @@ support Ethernet, the generic driver interface was already general enough.
 - Configuration (which ETH instance, RX/TX buffer counts, static MAC
   address, PHY MDIO address, ...) is read from an `.ini` section with
   `driver_name=dmeth`, resolved automatically by `dmdevfs`.
+- `dmeth` registers itself with [`dmnetif`](https://github.com/choco-technologies/dmnetif)
+  as soon as its device path is known - no separate setup step needed. A
+  TCP/IP stack or CLI tool (`ifconfig`, ...) can then address it by name
+  (`"eth0"`, `"eth1"`, ...) without ever knowing the underlying `/dev/dmethN`
+  path or `dmdrvi` ioctl commands exist. See "Self-registration with
+  dmnetif" below.
 - Two on-target loopback modes (MAC-internal and PHY-internal) let a test
   exercise the full TX/RX path without a cable or link partner.
 
@@ -36,13 +42,18 @@ complete ioctl/API surface.
 
 ```
 ┌──────────────────────────────────────┐
-│     Application / TCP-IP stack       │
+│  TCP/IP stack (networkd) / ifconfig  │
+├──────────────────────────────────────┤
+│               DMNETIF                │
+│   named interface ("eth0"), up/down, │
+│   link status, send/receive a frame  │
 ├──────────────────────────────────────┤
 │         DMDRVI Interface             │
 │  (open/close/read/write/ioctl/stat)  │
 ├──────────────────────────────────────┤
 │           DMETH Core                 │
-│ (config parsing, ioctl dispatch)     │
+│ (config parsing, ioctl dispatch,     │
+│  registers itself with dmnetif)      │
 ├──────────────────────────────────────┤
 │        DMETH Port Layer              │
 │ (MAC/DMA/PHY register access,        │
@@ -51,6 +62,24 @@ complete ioctl/API surface.
 │      Hardware (Ethernet MAC)         │
 └──────────────────────────────────────┘
 ```
+
+### Self-registration with dmnetif
+
+`dmeth` does not just expose `/dev/dmethN` and stop there - its
+`dmdrvi_path_ready()` implementation (`src/dmeth.c`) calls
+`dmnetif_register("eth<instance>", path)` as soon as `dmdevfs` hands it the
+device's final path, and `dmnetif_unregister()` on teardown
+(`dmdrvi_free()`). This is the earliest point a `dmdrvi` driver *can*
+register - `dmdevfs` has not necessarily created the device node yet inside
+`dmod_init()`/`dmdrvi_create()`.
+
+Practical effect: once a `dmeth` instance configured in `.ini` comes up,
+`"eth0"` (or `"eth1"`, ...) exists as a named network interface with no
+extra wiring - `networkd`, `ifconfig`, or any other `dmnetif` consumer can
+address it immediately without knowing it is backed by `/dev/dmeth0` or that
+`dmeth` exists at all. `dmnetif` itself opens that device path and drives it
+through the same `dmdrvi` `read`/`write`/`ioctl` contract described above -
+`dmeth` never opens its own device file.
 
 RX/TX descriptor rings and packet buffers are allocated from the shared
 `"dma"` `dmheap` context (not ordinary heap memory) at `dmeth_port_init()`
