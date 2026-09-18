@@ -23,7 +23,48 @@
  * working PHY.
  */
 
+/* Ethernet header: 6 bytes destination MAC, 6 source, 2 length/type. */
+#define DMETH_TEST_HDR_BYTES      14U
 #define DMETH_TEST_FRAME_BYTES    64U
+#define DMETH_TEST_PAYLOAD_BYTES  (DMETH_TEST_FRAME_BYTES - DMETH_TEST_HDR_BYTES)
+
+/* Long enough to cover a real part's loopback settling, short enough that a
+ * loopback which never round-trips gets *reported* rather than left hanging
+ * the shell that started the test. */
+#define DMETH_TEST_IO_TIMEOUT_MS  3000U
+
+/**
+ * @brief Build the frame this test transmits.
+ *
+ * It has to be a real, well-formed Ethernet frame rather than an arbitrary
+ * byte pattern: both loopback modes feed the frame back through the MAC's
+ * normal receive path, which applies the destination-address filter. A frame
+ * not addressed to this interface is dropped there and never reaches a
+ * descriptor - indistinguishable, from the read() side, from a MAC that does
+ * not receive at all.
+ *
+ * The length/type field carries the payload length (<= 1500), which also
+ * makes MACCR.APCS strip the FCS the MAC appends on transmit, so what comes
+ * back is exactly the #DMETH_TEST_FRAME_BYTES that went out.
+ *
+ * @param frame Buffer of #DMETH_TEST_FRAME_BYTES bytes to fill.
+ * @param mac   This interface's own MAC address, used as both destination
+ *              and source.
+ */
+static void build_frame(uint8_t frame[DMETH_TEST_FRAME_BYTES], const uint8_t mac[DMDRVI_NET_MAC_ADDR_LEN])
+{
+    for (size_t i = 0; i < DMDRVI_NET_MAC_ADDR_LEN; i++)
+    {
+        frame[i] = mac[i];                              /* destination */
+        frame[DMDRVI_NET_MAC_ADDR_LEN + i] = mac[i];    /* source      */
+    }
+
+    frame[12] = (uint8_t)(DMETH_TEST_PAYLOAD_BYTES >> 8);
+    frame[13] = (uint8_t)(DMETH_TEST_PAYLOAD_BYTES & 0xFFU);
+
+    for (size_t i = DMETH_TEST_HDR_BYTES; i < DMETH_TEST_FRAME_BYTES; i++)
+        frame[i] = (uint8_t)i;
+}
 
 static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, const char *mode_name)
 {
@@ -41,20 +82,36 @@ static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, con
         return false;
     }
 
-    uint8_t tx_frame[DMETH_TEST_FRAME_BYTES];
-    for (size_t i = 0; i < sizeof(tx_frame); i++)
-        tx_frame[i] = (uint8_t)i;
-
+    /* Read the MAC back *after* START: the address from the .ini is only
+     * programmed into the MAC's filter registers there, so asking earlier
+     * would address the frame to the filter's reset value instead. */
     bool ok = true;
-
-    size_t written = Dmod_FileWrite(tx_frame, 1, sizeof(tx_frame), handle);
-    if (written != sizeof(tx_frame))
+    dmdrvi_net_mac_addr_t mac;
+    if (Dmod_Ioctl(handle, DMDRVI_IOCTL_NET_GET_MAC_ADDR, &mac) != 0)
     {
-        Dmod_Printf("ERROR: wrote %u of %u byte(s)\n", (unsigned)written, (unsigned)sizeof(tx_frame));
+        Dmod_Printf("ERROR: DMDRVI_IOCTL_NET_GET_MAC_ADDR failed\n");
         ok = false;
     }
 
+    uint8_t tx_frame[DMETH_TEST_FRAME_BYTES];
     uint8_t rx_frame[DMETH_TEST_FRAME_BYTES] = {0};
+
+    if (ok)
+    {
+        build_frame(tx_frame, mac.addr);
+        Dmod_Printf("sending %u byte(s) to %02x:%02x:%02x:%02x:%02x:%02x\n",
+                    (unsigned)sizeof(tx_frame),
+                    mac.addr[0], mac.addr[1], mac.addr[2],
+                    mac.addr[3], mac.addr[4], mac.addr[5]);
+
+        size_t written = Dmod_FileWrite(tx_frame, 1, sizeof(tx_frame), handle);
+        if (written != sizeof(tx_frame))
+        {
+            Dmod_Printf("ERROR: wrote %u of %u byte(s)\n", (unsigned)written, (unsigned)sizeof(tx_frame));
+            ok = false;
+        }
+    }
+
     if (ok)
     {
         size_t received = Dmod_FileRead(rx_frame, 1, sizeof(rx_frame), handle);
@@ -71,7 +128,8 @@ static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, con
             {
                 if (rx_frame[i] != tx_frame[i])
                 {
-                    Dmod_Printf("ERROR: received frame does not match transmitted frame\n");
+                    Dmod_Printf("ERROR: byte %u differs - sent 0x%02x, received 0x%02x\n",
+                                (unsigned)i, tx_frame[i], rx_frame[i]);
                     ok = false;
                     break;
                 }
@@ -108,6 +166,17 @@ int main(int argc, char *argv[])
     if (handle == NULL)
     {
         Dmod_Printf("ERROR: could not open '%s' (is dmdevfs mounted and dmeth configured?)\n", path);
+        return -1;
+    }
+
+    /* A loopback that does not round-trip has to fail this test, not hang
+     * the shell that started it - read()/write() block indefinitely by
+     * default (see DMETH_IOCTL_SET_IO_TIMEOUT). */
+    uint32_t io_timeout_ms = DMETH_TEST_IO_TIMEOUT_MS;
+    if (Dmod_Ioctl(handle, DMETH_IOCTL_SET_IO_TIMEOUT, &io_timeout_ms) != 0)
+    {
+        Dmod_Printf("ERROR: DMETH_IOCTL_SET_IO_TIMEOUT failed\n");
+        Dmod_FileClose(handle);
         return -1;
     }
 

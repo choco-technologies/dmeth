@@ -2,6 +2,7 @@
 #define DMETH_IOCTL_H
 
 #include "dmdrvi_ioctl.h"
+#include <stdint.h>
 
 /**
  * @brief dmeth-private IOCTL commands
@@ -35,5 +36,23 @@
  */
 #define DMETH_IOCTL_SET_LOOPBACK_MODE       (DMDRVI_IOCTL_CUSTOM_BASE + 2)  /**< arg: const dmeth_loopback_mode_t* */
 #define DMETH_IOCTL_GET_LOOPBACK_MODE       (DMDRVI_IOCTL_CUSTOM_BASE + 3)  /**< arg: dmeth_loopback_mode_t* */
+
+/**
+ * arg: const uint32_t* / uint32_t*
+ *
+ * Upper bound, in milliseconds, on how long a read() or write() on this
+ * device may block - read() waiting for a frame to arrive, write() waiting
+ * for a free TX descriptor. 0 (the default) means "block until it happens",
+ * which is what a network interface's own RX thread wants: a frame that has
+ * not arrived yet is not an error to it.
+ *
+ * A caller that has to *report* "nothing came back" rather than wait for it
+ * sets a bound here first - tests/dmeth_test.c does, so a loopback that
+ * does not round-trip fails the test instead of hanging the shell that
+ * started it. On expiry read()/write() return 0 (bytes transferred), the
+ * same way a short transfer is reported.
+ */
+#define DMETH_IOCTL_SET_IO_TIMEOUT          (DMDRVI_IOCTL_CUSTOM_BASE + 4)  /**< arg: const uint32_t* (milliseconds, 0 = block forever) */
+#define DMETH_IOCTL_GET_IO_TIMEOUT          (DMDRVI_IOCTL_CUSTOM_BASE + 5)  /**< arg: uint32_t* (milliseconds, 0 = block forever) */
 
 #endif /* DMETH_IOCTL_H */

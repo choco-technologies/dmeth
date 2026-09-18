@@ -43,7 +43,9 @@
  * separately below). */
 #define PHY_REG_BCR                   0x00U
 #define PHY_REG_BSR                   0x01U
+#define PHY_BCR_DUPLEX_FULL           (1U << 8)
 #define PHY_BCR_RESTART_AUTONEG       (1U << 9)
+#define PHY_BCR_SPEED_100M            (1U << 13)
 #define PHY_BCR_LOOPBACK              (1U << 14)
 #define PHY_BCR_AUTONEG_ENABLE        (1U << 12)
 #define PHY_BCR_RESET                 (1U << 15)
@@ -89,6 +91,7 @@ typedef struct
     uint8_t            *tx_buffers;
     volatile uint32_t   rx_tail;      /* next descriptor the core consumes */
     volatile uint32_t   tx_head;      /* next descriptor a transmit fills */
+    uint32_t            io_timeout_ms;/* bound on a blocking receive/transmit; 0 = wait forever */
     dmosi_semaphore_t   rx_sem;       /* posted from the ISR when a frame is ready */
 } eth_state_t;
 
@@ -594,6 +597,46 @@ dmod_dmeth_port_api_declaration(1.0, int, _set_promiscuous_mode, ( dmeth_instanc
     return 0;
 }
 
+/**
+ * @brief Whether a blocking wait started at @p start_ms has run out of time.
+ *
+ * @param st       State whose configured io_timeout_ms bounds the wait
+ *                 (0 = no bound, so this never reports expiry).
+ * @param start_ms dmosi_get_tick_count() sampled when the wait began.
+ * @return true once the bound has been exceeded.
+ */
+static bool io_timeout_expired(const eth_state_t *st, uint32_t start_ms)
+{
+    if (st->io_timeout_ms == 0)
+        return false;
+
+    /* Unsigned wraparound makes this correct across the tick counter's
+     * 32-bit rollover without a 64-bit counter. */
+    return (uint32_t)(dmosi_get_tick_count() - start_ms) >= st->io_timeout_ms;
+}
+
+/**
+ * @brief Bound how long a blocking receive/transmit may wait.
+ *
+ * dmdrvi has no O_NONBLOCK/timeout concept to plumb through per call, so
+ * this is a per-instance setting applied to every subsequent
+ * dmeth_port_receive_frame()/dmeth_port_transmit_frame() - reachable from a
+ * caller through DMETH_IOCTL_SET_IO_TIMEOUT (dmeth_ioctl.h).
+ *
+ * @param instance   Target instance.
+ * @param timeout_ms Bound in milliseconds, or 0 to wait indefinitely (the
+ *                   default, and what a network interface's RX thread wants).
+ * @return 0 on success, -EINVAL for a bad instance.
+ */
+dmod_dmeth_port_api_declaration(1.0, int, _set_io_timeout, ( dmeth_instance_t instance, uint32_t timeout_ms ))
+{
+    if (!is_valid_instance(instance))
+        return -EINVAL;
+
+    s_eth[instance].io_timeout_ms = timeout_ms;
+    return 0;
+}
+
 /* ---- Loopback (test-only) ---- */
 
 /**
@@ -623,15 +666,36 @@ dmod_dmeth_port_api_declaration(1.0, int, _set_loopback_mode, ( dmeth_instance_t
     {
         case dmeth_loopback_mode_none:
             ETH->MACCR &= ~ETH_MACCR_LM;
-            mdio_write(st->phy_address, PHY_REG_BCR, mdio_read(st->phy_address, PHY_REG_BCR) & ~PHY_BCR_LOOPBACK);
-            return 0;
+            /* Hand the link back to autonegotiation rather than just
+             * clearing BCR.Loopback: the PHY path below forces a fixed
+             * speed/duplex with autonegotiation *off*, so clearing one bit
+             * would leave the PHY forced at 100M/full afterwards. */
+            return mdio_write(st->phy_address, PHY_REG_BCR,
+                              PHY_BCR_AUTONEG_ENABLE | PHY_BCR_RESTART_AUTONEG);
 
         case dmeth_loopback_mode_mac:
             ETH->MACCR |= ETH_MACCR_LM;
             return 0;
 
         case dmeth_loopback_mode_phy:
-            return mdio_write(st->phy_address, PHY_REG_BCR, mdio_read(st->phy_address, PHY_REG_BCR) | PHY_BCR_LOOPBACK);
+        {
+            /* Force 100M/full-duplex with autonegotiation disabled, rather
+             * than OR-ing BCR.Loopback into whatever autonegotiation left
+             * behind. Clause 22 leaves BCR.Loopback's behaviour unspecified
+             * while BCR.AutonegEnable is set, and the LAN8742A on the
+             * reference board is one of the parts that needs autonegotiation
+             * off for near-end loopback to pass traffic at all. */
+            int ret = mdio_write(st->phy_address, PHY_REG_BCR,
+                                 PHY_BCR_LOOPBACK | PHY_BCR_SPEED_100M | PHY_BCR_DUPLEX_FULL);
+            if (ret != 0)
+                return ret;
+
+            /* MACCR has to agree with the speed/duplex just forced on the
+             * PHY - a mismatch here is exactly the silent all-frames-dropped
+             * failure described on PHY_REG_LAN8742A_SPECIAL_STATUS above. */
+            ETH->MACCR |= ETH_MACCR_FES | ETH_MACCR_DM;
+            return 0;
+        }
 
         default:
             return -EINVAL;
@@ -667,10 +731,14 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
 
     eth_dma_desc_t *desc = &st->tx_desc[st->tx_head];
 
-    /* Block until this descriptor is free - dmdrvi has no O_NONBLOCK/timeout
-     * concept to plumb a bound through (see docs/port-implementation.md). */
+    /* Block until this descriptor is free. dmdrvi has no per-call
+     * O_NONBLOCK/timeout to plumb a bound through, so the bound - if the
+     * caller wants one at all - comes from dmeth_port_set_io_timeout(). */
+    uint32_t start_ms = dmosi_get_tick_count();
     while ((desc->status & ETH_DMA_DESC_OWN) != 0)
     {
+        if (io_timeout_expired(st, start_ms))
+            return -ETIMEDOUT;
         dmclk_port_delay_us(100);
     }
 
@@ -735,9 +803,19 @@ dmod_dmeth_port_api_declaration(1.0, int, _receive_frame, ( dmeth_instance_t ins
      *
      * Waiting with a timeout and re-checking OWN makes the semaphore a pure
      * wake-up hint, which is all it can reliably be: a coalesced or dropped
-     * post costs one extra wait, never a permanent stall. */
+     * post costs one extra wait, never a permanent stall.
+     *
+     * How long the whole loop may run is a separate question from that
+     * per-wait hint interval, and is the caller's to answer through
+     * dmeth_port_set_io_timeout(): unbounded by default (a frame that has
+     * not arrived is not an error to a network interface), bounded by a
+     * caller that has to report "nothing arrived" instead of waiting for
+     * it. */
+    uint32_t start_ms = dmosi_get_tick_count();
     while ((desc->status & ETH_DMA_DESC_OWN) != 0)
     {
+        if (io_timeout_expired(st, start_ms))
+            return -ETIMEDOUT;
         dmosi_semaphore_wait(st->rx_sem, 1, DMETH_RX_WAIT_TIMEOUT_MS);
     }
 

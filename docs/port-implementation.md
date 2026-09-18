@@ -27,6 +27,7 @@ int  dmeth_port_set_promiscuous_mode(dmeth_instance_t instance, bool enable);
 
 int  dmeth_port_set_loopback_mode(dmeth_instance_t instance, dmeth_loopback_mode_t mode);
 
+int  dmeth_port_set_io_timeout(dmeth_instance_t instance, uint32_t timeout_ms);
 int  dmeth_port_transmit_frame(dmeth_instance_t instance, const uint8_t* frame, size_t len);
 int  dmeth_port_receive_frame(dmeth_instance_t instance, uint8_t* buffer, size_t size, size_t* received);
 ```
@@ -62,10 +63,20 @@ Exactly one `memcpy()` happens on each path:
   `memcpy()`'s the caller's frame into it, then sets `OWN` to hand it to the
   DMA.
 
-Both block indefinitely (`dmdrvi` has no `O_NONBLOCK`/timeout to plumb a
-bound through) using `dmosi_semaphore_wait(sem, 1, -1)` for RX and a plain
-polling loop for TX (no TX-complete interrupt is enabled, mirroring
-dnx-rtos's own minimal ISR - see below).
+Both block by default, using a `dmosi_semaphore_wait()` loop for RX and a
+plain polling loop for TX (no TX-complete interrupt is enabled, mirroring
+dnx-rtos's own minimal ISR - see below). That is the right default for a
+network interface's own RX thread: a frame that has not arrived yet is not
+an error to it.
+
+`dmdrvi` has no per-call `O_NONBLOCK`/timeout to plumb a bound through, so a
+caller that must *not* wait forever sets a per-instance one first, with
+`dmeth_port_set_io_timeout()` (reachable through `DMETH_IOCTL_SET_IO_TIMEOUT`,
+see `docs/api-reference.md`); both calls then return `-ETIMEDOUT` once it
+expires, which core reports up as a zero-byte `read()`/`write()`. `0` - the
+value `_init()` leaves behind - restores "wait indefinitely". `tests/
+dmeth_test.c` sets a bound so that a loopback which never round-trips fails
+the test instead of hanging the shell that started it.
 
 **Buffers are allocated from the shared `"dma"` `dmheap` context**
 (`dmheap_get_context_by_name("dma")` + `dmheap_aligned_alloc(...)`), not a
@@ -112,7 +123,22 @@ real RX/TX communication without a cable or link partner:
   bit (IEEE 802.3 clause 22, bit 14 - identical on every PHY, not a
   vendor-specific register) over MDIO, looping *inside the PHY chip*, after
   the RMII pins - additionally exercises the real RMII electrical
-  connection and the PHY itself, but needs a real, MDIO-reachable PHY.
+  connection and the PHY itself, but needs a real, MDIO-reachable PHY. It
+  writes the whole `BCR` - loopback plus a forced 100M/full-duplex with
+  autonegotiation **off** - rather than OR-ing the loopback bit into
+  whatever autonegotiation left behind: clause 22 leaves `BCR.Loopback`'s
+  behaviour unspecified while `BCR.AutonegEnable` is set, and `MACCR`'s
+  `FES`/`DM` are set to match, since a MAC/PHY speed mismatch is the silent
+  all-frames-dropped failure described under "known bugs" below. Going back
+  to `dmeth_loopback_mode_none` therefore restarts autonegotiation instead
+  of just clearing the bit.
+
+Either loopback returns the frame through the MAC's **normal receive path**,
+address filter included, so a test frame has to be addressed to the
+interface itself (or the filter widened with
+`DMETH_IOCTL_SET_PROMISCUOUS_MODE`). A frame with some other destination is
+dropped in the filter and never reaches a descriptor - which, from the
+`read()` side, looks exactly like a MAC that does not receive at all.
 
 `tests/dmeth_test.c` is a `dmod_add_executable()` application (not a
 `dmod_add_test()`/`DMOD_TEST_STEP` unit test - it needs `argv` and is meant
@@ -120,8 +146,13 @@ to be run manually from the shell), the same shape `dmdma_test_dev.c` uses
 for `dmdma`: it opens `/dev/dmeth0` (or whichever instance is passed as
 `argv[1]`) through the ordinary VFS file interface (`Dmod_FileOpen`/`_Ioctl`/
 `_Write`/`_Read`/`_Close`) and drives it purely through `dmdrvi_ioctl()`
-commands - `DMETH_IOCTL_SET_LOOPBACK_MODE` (see `dmeth_ioctl.h`) plus the
-standard `DMDRVI_IOCTL_NET_START`/`_STOP`. This needs a fully running system
+commands - `DMETH_IOCTL_SET_LOOPBACK_MODE` and `DMETH_IOCTL_SET_IO_TIMEOUT`
+(see `dmeth_ioctl.h`) plus the standard `DMDRVI_IOCTL_NET_START`/`_STOP`. It
+transmits a well-formed 64-byte Ethernet frame addressed to the interface's
+own MAC (read back with `DMDRVI_IOCTL_NET_GET_MAC_ADDR` *after* `_NET_START`,
+which is where the `.ini`'s address reaches the filter registers), whose
+length/type field carries the payload length so `MACCR.APCS` strips the FCS
+the MAC appends on transmit and the same 64 bytes come back. This needs a fully running system
 with `dmeth`+`dmeth_port` already loaded and configured from the board's
 actual `eth0.ini` (see `configs/board/`), so a pass confirms that specific
 board's real configuration - not a synthetic one - produces working MAC and

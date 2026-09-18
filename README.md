@@ -235,6 +235,12 @@ loopback. A pass confirms that specific board's real configuration (not a
 synthetic one) works. It does real MDIO/PHY-reset/autonegotiation timing,
 so it only runs on real hardware, not in a host/simulator build.
 
+The frame it sends is a well-formed Ethernet frame addressed to the
+interface's own MAC, because a loopback frame still goes through the MAC's
+address filter on the way back in; and it bounds `read()`/`write()` with
+`DMETH_IOCTL_SET_IO_TIMEOUT` first, so a loopback that never round-trips
+fails the test rather than hanging the shell that started it.
+
 ## Dependencies
 
 - `dmdrvi` - DMOD Driver Interface (device file, read/write/ioctl)

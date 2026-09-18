@@ -57,12 +57,20 @@ dmod_dmeth_port_api(1.0, int, _set_loopback_mode, ( dmeth_instance_t instance, d
 /* --- Data plane ---
  *
  * Exactly one memcpy each: DMA rx buffer -> caller's buffer, or caller's
- * buffer -> DMA tx buffer. Both block indefinitely (dmdrvi has no
- * O_NONBLOCK/timeout concept to plumb through) - _receive_frame() waits on
- * an internal semaphore posted from the RX ISR, _transmit_frame() waits for
- * a free TX descriptor. Core (dmeth.c) never touches descriptors directly.
+ * buffer -> DMA tx buffer. Core (dmeth.c) never touches descriptors
+ * directly.
+ *
+ * Both block by default - _receive_frame() waits on an internal semaphore
+ * posted from the RX ISR, _transmit_frame() waits for a free TX descriptor -
+ * which is what a network interface's own RX thread wants. Since dmdrvi has
+ * no O_NONBLOCK to plumb through, dmeth_port_set_io_timeout() is how a
+ * caller that must not wait forever (a diagnostic that has to *report* "no
+ * frame came back", like tests/dmeth_test.c) puts a bound on that wait;
+ * both then return -ETIMEDOUT once it expires. 0 (the default) restores
+ * "wait indefinitely".
  */
 
+dmod_dmeth_port_api(1.0, int, _set_io_timeout, ( dmeth_instance_t instance, uint32_t timeout_ms ) );
 dmod_dmeth_port_api(1.0, int, _transmit_frame, ( dmeth_instance_t instance, const uint8_t* frame, size_t len ) );
 dmod_dmeth_port_api(1.0, int, _receive_frame,  ( dmeth_instance_t instance, uint8_t* buffer, size_t size, size_t* received ) );
 

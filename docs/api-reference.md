@@ -51,6 +51,8 @@ switch - see the comment in `dmeth_ioctl.h`.
 | `DMETH_IOCTL_GET_PROMISCUOUS_MODE`         | out              | `bool*`        | Read the current promiscuous filter state   |
 | `DMETH_IOCTL_SET_LOOPBACK_MODE`            | in               | `const dmeth_loopback_mode_t*` | Test-only: enable MAC/PHY internal loopback (must be set before `DMDRVI_IOCTL_NET_START`) - see `tests/dmeth_test.c` |
 | `DMETH_IOCTL_GET_LOOPBACK_MODE`            | out              | `dmeth_loopback_mode_t*` | Read the loopback mode last applied via `DMETH_IOCTL_SET_LOOPBACK_MODE` |
+| `DMETH_IOCTL_SET_IO_TIMEOUT`               | in               | `const uint32_t*` | Bound, in milliseconds, on how long `read()`/`write()` may block; 0 (the default) blocks indefinitely |
+| `DMETH_IOCTL_GET_IO_TIMEOUT`               | out              | `uint32_t*`    | Read the bound currently applied to `read()`/`write()` |
 
 ### Bring-up sequence
 
@@ -115,5 +117,6 @@ rationale. Summary (`include/dmeth_port.h`):
 | `dmeth_port_get_link_status(instance)`  | Poll the PHY's link status bit over MDIO                      |
 | `dmeth_port_set_promiscuous_mode(instance, enable)` | Toggle the MAC's promiscuous filter               |
 | `dmeth_port_set_loopback_mode(instance, mode)` | Test-only: MAC- or PHY-internal loopback, no cable/link partner needed (see `tests/dmeth_test.c`) |
-| `dmeth_port_transmit_frame(instance, frame, len)` | Block until a TX descriptor is free, send one frame  |
-| `dmeth_port_receive_frame(instance, buffer, size, *received)` | Block until a frame is ready, copy it out |
+| `dmeth_port_set_io_timeout(instance, timeout_ms)` | Bound the blocking wait in `_transmit_frame()`/`_receive_frame()`; 0 (the default) waits indefinitely |
+| `dmeth_port_transmit_frame(instance, frame, len)` | Wait for a free TX descriptor, send one frame  |
+| `dmeth_port_receive_frame(instance, buffer, size, *received)` | Wait for a frame to be ready, copy it out |

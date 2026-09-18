@@ -23,6 +23,7 @@ struct dmdrvi_context
     bool                  running;    /**< Whether DMDRVI_IOCTL_NET_START has been applied */
     dmnetif_iface_t       iface;      /**< Handle returned by dmnetif_register(), once the devfs path is known */
     dmeth_loopback_mode_t loopback_mode; /**< Last mode applied via DMETH_IOCTL_SET_LOOPBACK_MODE (test-only, see dmeth_ioctl.h) */
+    uint32_t              io_timeout_ms; /**< Bound on a blocking read()/write(), via DMETH_IOCTL_SET_IO_TIMEOUT; 0 = block forever */
 };
 
 static int is_valid_context(dmdrvi_context_t context)
@@ -310,6 +311,21 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _ioctl, ( dmdrvi_context_t cont
         case DMETH_IOCTL_GET_LOOPBACK_MODE:
         {
             *(dmeth_loopback_mode_t *)arg = context->loopback_mode;
+            return 0;
+        }
+
+        case DMETH_IOCTL_SET_IO_TIMEOUT:
+        {
+            uint32_t timeout_ms = *(const uint32_t *)arg;
+            int ret = dmeth_port_set_io_timeout(context->config.instance, timeout_ms);
+            if (ret == 0)
+                context->io_timeout_ms = timeout_ms;
+            return ret;
+        }
+
+        case DMETH_IOCTL_GET_IO_TIMEOUT:
+        {
+            *(uint32_t *)arg = context->io_timeout_ms;
             return 0;
         }
 
