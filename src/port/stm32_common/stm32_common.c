@@ -392,10 +392,20 @@ dmod_dmeth_port_api_declaration(1.0, int, _init, ( dmeth_instance_t instance, co
 
     phy_reset_and_autonegotiate(st->phy_address);
 
-    /* MAC: auto pad/CRC strip and stripping, promiscuous mode from config;
-     * speed/duplex bits were already applied by phy_reset_and_autonegotiate().
-     * TE/RE are left clear here - DMDRVI_IOCTL_NET_START enables them. */
-    uint32_t maccr = ETH->MACCR | ETH_MACCR_APCS;
+    /* MAC: strip the FCS off every received frame, promiscuous mode from
+     * config; speed/duplex bits were already applied by
+     * phy_reset_and_autonegotiate(). TE/RE are left clear here -
+     * DMDRVI_IOCTL_NET_START enables them.
+     *
+     * Both stripping bits are needed, because each covers only half the
+     * frames: APCS strips pad+FCS from 802.3 frames (length/type field
+     * <= 1500) and explicitly leaves Ethernet II frames alone, while CSTF
+     * covers exactly those Type frames - which is what all real traffic is
+     * (ARP, IPv4, ...). With APCS alone the driver hands its caller the
+     * 4-byte FCS the MAC itself appended on transmit: a 60-byte ARP request
+     * arrives as 64 bytes of "frame". tests/dmeth_test.c round-trips one
+     * frame of each shape for this reason. */
+    uint32_t maccr = ETH->MACCR | ETH_MACCR_APCS | ETH_MACCR_CSTF;
     ETH->MACCR = maccr;
 
     uint32_t macffr = 0;

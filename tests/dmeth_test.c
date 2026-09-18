@@ -28,6 +28,20 @@
 #define DMETH_TEST_FRAME_BYTES    64U
 #define DMETH_TEST_PAYLOAD_BYTES  (DMETH_TEST_FRAME_BYTES - DMETH_TEST_HDR_BYTES)
 
+/* The frame is received into a buffer bigger than the frame itself, on
+ * purpose. Reading into an exactly-sized one would cap the reported length at
+ * what was asked for (dmeth copies min(frame_len, size)), hiding a driver that
+ * hands up more bytes than it was sent - which is exactly the FCS-stripping
+ * difference the two frame shapes below exist to catch. */
+#define DMETH_TEST_RX_BUF_BYTES   128U
+
+/* An EtherType, i.e. > 1500, so the length/type field is *not* a length.
+ * MACCR.APCS only strips the FCS when that field is <= 1500, so this shape
+ * takes a different path through the MAC's receive side than an 802.3 length
+ * frame does - and it is the shape all real traffic uses (ARP, IPv4, ...).
+ * 0x0806 (ARP) is used here simply because it is the smallest real one. */
+#define DMETH_TEST_ETHERTYPE_ARP  0x0806U
+
 /* Long enough to cover a real part's loopback settling, short enough that a
  * loopback which never round-trips gets *reported* rather than left hanging
  * the shell that started the test. */
@@ -43,15 +57,21 @@
  * descriptor - indistinguishable, from the read() side, from a MAC that does
  * not receive at all.
  *
- * The length/type field carries the payload length (<= 1500), which also
- * makes MACCR.APCS strip the FCS the MAC appends on transmit, so what comes
- * back is exactly the #DMETH_TEST_FRAME_BYTES that went out.
+ * Whatever the caller puts in the length/type field, the frame that comes
+ * back has to be exactly the #DMETH_TEST_FRAME_BYTES that went out: the MAC
+ * appends an FCS on transmit, and a driver that does not strip it again on
+ * receive hands its caller four bytes that were never sent.
  *
- * @param frame Buffer of #DMETH_TEST_FRAME_BYTES bytes to fill.
- * @param mac   This interface's own MAC address, used as both destination
- *              and source.
+ * @param frame       Buffer of #DMETH_TEST_FRAME_BYTES bytes to fill.
+ * @param mac         This interface's own MAC address, used as both
+ *                    destination and source.
+ * @param len_or_type Value for the length/type field - a payload length
+ *                    (<= 1500) makes it an 802.3 frame, anything above that
+ *                    an Ethernet II frame of that EtherType.
  */
-static void build_frame(uint8_t frame[DMETH_TEST_FRAME_BYTES], const uint8_t mac[DMDRVI_NET_MAC_ADDR_LEN])
+static void build_frame(uint8_t frame[DMETH_TEST_FRAME_BYTES],
+                        const uint8_t mac[DMDRVI_NET_MAC_ADDR_LEN],
+                        uint16_t len_or_type)
 {
     for (size_t i = 0; i < DMDRVI_NET_MAC_ADDR_LEN; i++)
     {
@@ -59,11 +79,61 @@ static void build_frame(uint8_t frame[DMETH_TEST_FRAME_BYTES], const uint8_t mac
         frame[DMDRVI_NET_MAC_ADDR_LEN + i] = mac[i];    /* source      */
     }
 
-    frame[12] = (uint8_t)(DMETH_TEST_PAYLOAD_BYTES >> 8);
-    frame[13] = (uint8_t)(DMETH_TEST_PAYLOAD_BYTES & 0xFFU);
+    frame[12] = (uint8_t)(len_or_type >> 8);
+    frame[13] = (uint8_t)(len_or_type & 0xFFU);
 
     for (size_t i = DMETH_TEST_HDR_BYTES; i < DMETH_TEST_FRAME_BYTES; i++)
         frame[i] = (uint8_t)i;
+}
+
+/**
+ * @brief Send one frame and verify the same bytes come back.
+ *
+ * @param handle      Open device handle, already started and in a loopback mode.
+ * @param mac         Interface's own MAC, used as the frame's destination.
+ * @param len_or_type Length/type field to build the frame with.
+ * @param shape_name  Human-readable name of the frame shape, for the log.
+ * @return true if exactly #DMETH_TEST_FRAME_BYTES came back unchanged.
+ */
+static bool roundtrip_frame(void *handle, const uint8_t mac[DMDRVI_NET_MAC_ADDR_LEN],
+                            uint16_t len_or_type, const char *shape_name)
+{
+    uint8_t tx_frame[DMETH_TEST_FRAME_BYTES];
+    uint8_t rx_frame[DMETH_TEST_RX_BUF_BYTES] = {0};
+
+    build_frame(tx_frame, mac, len_or_type);
+
+    size_t written = Dmod_FileWrite(tx_frame, 1, sizeof(tx_frame), handle);
+    if (written != sizeof(tx_frame))
+    {
+        Dmod_Printf("ERROR: %s: wrote %u of %u byte(s)\n",
+                    shape_name, (unsigned)written, (unsigned)sizeof(tx_frame));
+        return false;
+    }
+
+    size_t received = Dmod_FileRead(rx_frame, 1, sizeof(rx_frame), handle);
+    if (received != sizeof(tx_frame))
+    {
+        Dmod_Printf("ERROR: %s: received %u byte(s), expected %u%s\n",
+                    shape_name, (unsigned)received, (unsigned)sizeof(tx_frame),
+                    (received == sizeof(tx_frame) + 4U) ? " (FCS not stripped)" : "");
+        return false;
+    }
+
+    /* No memcmp() - test_dmeth links without libc, so the frame is
+     * compared byte-by-byte instead. */
+    for (size_t i = 0; i < sizeof(tx_frame); i++)
+    {
+        if (rx_frame[i] != tx_frame[i])
+        {
+            Dmod_Printf("ERROR: %s: byte %u differs - sent 0x%02x, received 0x%02x\n",
+                        shape_name, (unsigned)i, tx_frame[i], rx_frame[i]);
+            return false;
+        }
+    }
+
+    Dmod_Printf("   ok: %s\n", shape_name);
+    return true;
 }
 
 static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, const char *mode_name)
@@ -93,48 +163,18 @@ static bool run_loopback_roundtrip(void *handle, dmeth_loopback_mode_t mode, con
         ok = false;
     }
 
-    uint8_t tx_frame[DMETH_TEST_FRAME_BYTES];
-    uint8_t rx_frame[DMETH_TEST_FRAME_BYTES] = {0};
-
     if (ok)
     {
-        build_frame(tx_frame, mac.addr);
         Dmod_Printf("sending %u byte(s) to %02x:%02x:%02x:%02x:%02x:%02x\n",
-                    (unsigned)sizeof(tx_frame),
+                    (unsigned)DMETH_TEST_FRAME_BYTES,
                     mac.addr[0], mac.addr[1], mac.addr[2],
                     mac.addr[3], mac.addr[4], mac.addr[5]);
 
-        size_t written = Dmod_FileWrite(tx_frame, 1, sizeof(tx_frame), handle);
-        if (written != sizeof(tx_frame))
-        {
-            Dmod_Printf("ERROR: wrote %u of %u byte(s)\n", (unsigned)written, (unsigned)sizeof(tx_frame));
-            ok = false;
-        }
-    }
-
-    if (ok)
-    {
-        size_t received = Dmod_FileRead(rx_frame, 1, sizeof(rx_frame), handle);
-        if (received != sizeof(tx_frame))
-        {
-            Dmod_Printf("ERROR: received %u of %u byte(s)\n", (unsigned)received, (unsigned)sizeof(tx_frame));
-            ok = false;
-        }
-        else
-        {
-            /* No memcmp() - test_dmeth links without libc, so the frame is
-             * compared byte-by-byte instead. */
-            for (size_t i = 0; i < sizeof(tx_frame); i++)
-            {
-                if (rx_frame[i] != tx_frame[i])
-                {
-                    Dmod_Printf("ERROR: byte %u differs - sent 0x%02x, received 0x%02x\n",
-                                (unsigned)i, tx_frame[i], rx_frame[i]);
-                    ok = false;
-                    break;
-                }
-            }
-        }
+        /* Both frame shapes, because they take different paths through the
+         * MAC's receive side (see DMETH_TEST_ETHERTYPE_ARP) and only one of
+         * them is what real traffic looks like. */
+        ok  = roundtrip_frame(handle, mac.addr, DMETH_TEST_PAYLOAD_BYTES, "802.3 length frame");
+        ok &= roundtrip_frame(handle, mac.addr, DMETH_TEST_ETHERTYPE_ARP, "EtherType frame");
     }
 
     dmeth_loopback_mode_t none = dmeth_loopback_mode_none;

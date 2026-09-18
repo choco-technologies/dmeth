@@ -55,6 +55,17 @@ handed in by core, unlike `dmuart`'s `dm_sw_ring` - Ethernet's RX/TX buffers
 *are* the DMA descriptor memory, which is inherently hardware-specific).
 Exactly one `memcpy()` happens on each path:
 
+The MAC is configured to strip the FCS off **every** received frame, which
+takes two bits, not one: `MACCR.APCS` covers 802.3 frames (length/type field
+<= 1500) and deliberately leaves Ethernet II frames alone, so `MACCR.CSTF`
+("CRC stripping for Type frames") is needed for the rest - which is what all
+real traffic is (ARP, IPv4, ...). With `APCS` alone, `_receive_frame()` hands
+its caller the four-byte FCS the MAC itself appended on transmit: a 60-byte
+ARP request arrives as 64 bytes of "frame". `tests/dmeth_test.c` round-trips
+one frame of each shape so this cannot regress silently - a protocol parser
+that trusts its own length field (dmarp, dmip) tolerates the extra bytes, so
+nothing visibly breaks, it just quietly stops being the frame that was sent.
+
 - RX: DMA writes directly into a descriptor's buffer; `_receive_frame()`
   waits on a semaphore posted by the ISR, then does the one `memcpy()` from
   that buffer straight into the caller's buffer (truncating to the caller's

@@ -162,6 +162,7 @@ typedef struct
 #define ETH_MACCR_DM                (1U << 11)  /* Duplex mode (1 = full) */
 #define ETH_MACCR_LM                (1U << 12)  /* Loopback mode */
 #define ETH_MACCR_FES               (1U << 14)  /* Fast ethernet speed (1 = 100M) */
+#define ETH_MACCR_CSTF              (1U << 25)  /* CRC stripping for Type frames */
 
 /* ---- MACFFR bits ---- */
 #define ETH_MACFFR_PM               (1U << 0)   /* Promiscuous mode */

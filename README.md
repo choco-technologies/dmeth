@@ -239,7 +239,10 @@ The frame it sends is a well-formed Ethernet frame addressed to the
 interface's own MAC, because a loopback frame still goes through the MAC's
 address filter on the way back in; and it bounds `read()`/`write()` with
 `DMETH_IOCTL_SET_IO_TIMEOUT` first, so a loopback that never round-trips
-fails the test rather than hanging the shell that started it.
+fails the test rather than hanging the shell that started it. Each loopback
+mode round-trips two frame shapes - an 802.3 length frame and an Ethernet II
+type frame - because the MAC's FCS stripping treats them differently, and
+only the second is what real traffic looks like.
 
 ## Dependencies
 
