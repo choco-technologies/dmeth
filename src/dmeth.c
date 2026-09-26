@@ -122,7 +122,7 @@ int dmod_deinit(void)
 
 /* ---- DMDRVI interface ---- */
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, dmdrvi_context_t, _create, ( dmini_context_t config, dmdrvi_dev_num_t* dev_num ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, dmdrvi_context_t, _create, ( dmini_context_t config, dmdrvi_dev_num_t* dev_num ))
 {
     if (config == NULL || dev_num == NULL)
     {
@@ -170,7 +170,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, dmdrvi_context_t, _create, ( dmini_c
     return context;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _free, ( dmdrvi_context_t context ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, void, _free, ( dmdrvi_context_t context ))
 {
     if (is_valid_context(context))
     {
@@ -188,7 +188,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _free, ( dmdrvi_context_t cont
     }
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void*, _open, ( dmdrvi_context_t context, int flags, const dmdrvi_dev_num_t* dev_num ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, void*, _open, ( dmdrvi_context_t context, int flags, const dmdrvi_dev_num_t* dev_num ))
 {
     if (!is_valid_context(context))
     {
@@ -198,13 +198,23 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void*, _open, ( dmdrvi_context_t con
     return context;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _close, ( dmdrvi_context_t context, void* handle ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, void, _close, ( dmdrvi_context_t context, void* handle ))
 {
     /* No per-handle state to release - the interface stays up until STOP. */
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, size_t, _read, ( dmdrvi_context_t context, void* handle, void* buffer, size_t size, uint32_t offset ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, dmdrvi_ssize_t, _read, ( dmdrvi_context_t context, void* handle, void* buffer, size_t size, dmdrvi_offset_t offset ))
 {
+    if (offset < 0)
+    {
+        return -EINVAL;
+    }
+    if (size > (size_t)INT64_MAX)
+    {
+        return -EOVERFLOW;
+    }
+    /* offset is unused: dmeth is a frame-oriented device, not seekable. */
+
     if (!is_valid_context(context) || buffer == NULL || size == 0 || !context->running)
         return 0;
 
@@ -212,21 +222,31 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, size_t, _read, ( dmdrvi_context_t co
     int ret = dmeth_port_receive_frame(context->config.instance, (uint8_t *)buffer, size, &received);
     if (ret != 0)
         return 0;
-    return received;
+    return (dmdrvi_ssize_t)received;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, size_t, _write, ( dmdrvi_context_t context, void* handle, const void* buffer, size_t size, uint32_t offset ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, dmdrvi_ssize_t, _write, ( dmdrvi_context_t context, void* handle, const void* buffer, size_t size, dmdrvi_offset_t offset ))
 {
+    if (offset < 0)
+    {
+        return -EINVAL;
+    }
+    if (size > (size_t)INT64_MAX)
+    {
+        return -EOVERFLOW;
+    }
+    /* offset is unused: dmeth is a frame-oriented device, not seekable. */
+
     if (!is_valid_context(context) || buffer == NULL || size == 0 || !context->running)
         return 0;
 
     int ret = dmeth_port_transmit_frame(context->config.instance, (const uint8_t *)buffer, size);
     if (ret != 0)
         return 0;
-    return size;
+    return (dmdrvi_ssize_t)size;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _ioctl, ( dmdrvi_context_t context, void* handle, int command, void* arg ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _ioctl, ( dmdrvi_context_t context, void* handle, int command, void* arg ))
 {
     if (!is_valid_context(context))
     {
@@ -335,7 +355,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _ioctl, ( dmdrvi_context_t cont
     }
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _flush, ( dmdrvi_context_t context, void* handle ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _flush, ( dmdrvi_context_t context, void* handle ))
 {
     if (!is_valid_context(context))
     {
@@ -348,7 +368,7 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _flush, ( dmdrvi_context_t cont
     return 0;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _stat, ( dmdrvi_context_t context, const char* path, dmdrvi_stat_t* stat ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _stat, ( dmdrvi_context_t context, const char* path, dmdrvi_stat_t* stat ))
 {
     if (!is_valid_context(context) || stat == NULL)
     {
@@ -356,12 +376,12 @@ dmod_dmdrvi_dif_api_declaration(1.0, dmeth, int, _stat, ( dmdrvi_context_t conte
         return -EINVAL;
     }
 
-    stat->size = 0;   /* Stream-like device, no fixed size */
+    stat->size = (dmdrvi_size_t)0;   /* Stream-like device, no fixed size */
     stat->mode = 0666; /* Read-write permissions */
     return 0;
 }
 
-dmod_dmdrvi_dif_api_declaration(1.0, dmeth, void, _path_ready, ( dmdrvi_context_t context, const dmdrvi_dev_num_t* dev_num, const char* path ))
+dmod_dmdrvi_dif_api_declaration(2.0, dmeth, void, _path_ready, ( dmdrvi_context_t context, const dmdrvi_dev_num_t* dev_num, const char* path ))
 {
     if (!is_valid_context(context) || path == NULL)
     {
