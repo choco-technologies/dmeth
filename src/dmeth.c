@@ -246,6 +246,31 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmeth, dmdrvi_ssize_t, _write, ( dmdrvi_con
     return (dmdrvi_ssize_t)size;
 }
 
+/**
+ * @brief Whether a command dmeth implements needs a non-NULL argument
+ *
+ * START/STOP take none; unknown commands are answered with -ENOTTY by
+ * _ioctl() before their argument matters.
+ */
+static bool ioctl_needs_arg(int command)
+{
+    switch (command)
+    {
+        case DMDRVI_IOCTL_NET_SET_MAC_ADDR:
+        case DMDRVI_IOCTL_NET_GET_MAC_ADDR:
+        case DMDRVI_IOCTL_NET_GET_LINK_STATUS:
+        case DMETH_IOCTL_SET_PROMISCUOUS_MODE:
+        case DMETH_IOCTL_GET_PROMISCUOUS_MODE:
+        case DMETH_IOCTL_SET_LOOPBACK_MODE:
+        case DMETH_IOCTL_GET_LOOPBACK_MODE:
+        case DMETH_IOCTL_SET_IO_TIMEOUT:
+        case DMETH_IOCTL_GET_IO_TIMEOUT:
+            return true;
+        default:
+            return false;
+    }
+}
+
 dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _ioctl, ( dmdrvi_context_t context, void* handle, int command, void* arg ))
 {
     if (!is_valid_context(context))
@@ -254,8 +279,7 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _ioctl, ( dmdrvi_context_t cont
         return -EINVAL;
     }
 
-    /* START/STOP take no argument; every other command below needs one. */
-    if (arg == NULL && command != DMDRVI_IOCTL_NET_START && command != DMDRVI_IOCTL_NET_STOP)
+    if (arg == NULL && ioctl_needs_arg(command))
     {
         DMOD_LOG_ERROR("Null argument for ioctl command %d\n", command);
         return -EINVAL;
@@ -350,8 +374,11 @@ dmod_dmdrvi_dif_api_declaration(2.0, dmeth, int, _ioctl, ( dmdrvi_context_t cont
         }
 
         default:
-            DMOD_LOG_ERROR("Invalid ioctl command %d\n", command);
-            return -EINVAL;
+            /* Not an error: generic clients (e.g. dmdevfs probing every node
+             * for the block/monitor classes) send standard DMDRVI_IOCTL_*
+             * commands an Ethernet MAC does not implement - answer -ENOTTY
+             * quietly, as dmdrvi expects. */
+            return -ENOTTY;
     }
 }
 
