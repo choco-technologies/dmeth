@@ -721,8 +721,8 @@ dmod_dmeth_port_api_declaration(1.0, int, _set_loopback_mode, ( dmeth_instance_t
  * through, see docs/port-implementation.md) for the next TX descriptor's
  * `OWN` bit to clear, `memcpy()`'s @p frame into that descriptor's buffer
  * (the only copy on this path), marks it first+last segment, sets `OWN` to
- * hand it to the DMA, and pokes `DMATPDR` if the DMA had stalled on a
- * buffer-unavailable condition.
+ * hand it to the DMA, and pokes `DMATPDR` so a DMA that has suspended on a
+ * buffer-unavailable condition picks it up.
  *
  * @param instance Target instance (must be started via dmeth_port_start()).
  * @param frame    Frame bytes to transmit.
@@ -757,11 +757,11 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
     desc->status |= ETH_DMATxDesc_FS | ETH_DMATxDesc_LS;
     desc->status |= ETH_DMA_DESC_OWN;
 
-    if (ETH->DMASR & ETH_DMASR_TBUS)
-    {
-        ETH->DMASR = ETH_DMASR_TBUS;
-        ETH->DMATPDR = 0;
-    }
+    /* Always poke the TX DMA: real hardware flags a stall via TBUS, but the
+     * poll demand is harmless while the DMA is running, and Renode's MAC
+     * model never sets TBUS - frames after the first one never went out */
+    ETH->DMASR = ETH_DMASR_TBUS;
+    ETH->DMATPDR = 0;
 
     st->tx_head = (st->tx_head + 1U) % st->tx_count;
     return 0;
