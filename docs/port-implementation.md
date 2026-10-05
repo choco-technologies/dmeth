@@ -120,6 +120,24 @@ total, `rx_buffer_count`/`tx_buffer_count` in `.ini` - see
 `docs/configuration.md`), matching dnx-rtos's own STM32F4x7 ETH driver
 default.
 
+## PHY bring-up: autonegotiation in the background
+
+`dmeth_port_init()` does not wait for the link. It resets the PHY - polling
+`BCR.Reset`, which the PHY clears once the reset is done, for at most
+`PHY_RESET_TIMEOUT_MS` - starts autonegotiation and returns. Autonegotiation
+takes seconds with a cable attached and never completes without one, and the
+driver is configured during boot, so waiting for it would hold up the whole
+system.
+
+The speed/duplex the PHY negotiated is applied to `MACCR.FES`/`MACCR.DM` by
+`update_link()`, the first time the PHY reports the link up with
+autonegotiation complete - again after every link down/up. It runs from
+`dmeth_port_get_link_status()` (`DMDRVI_IOCTL_NET_GET_LINK_STATUS`), from
+`dmeth_port_transmit_frame()` while the link is not configured yet, and from
+`dmeth_port_receive_frame()` each time its wait for a frame times out, so the
+link gets configured even if nobody polls its status. While a loopback mode
+is active, `MACCR` speed/duplex are left alone.
+
 ## On-target testing: loopback
 
 `dmeth_port_set_loopback_mode()` exists so `tests/dmeth_test.c` can verify
@@ -180,7 +198,7 @@ a host/simulator build.
 - **dnx-rtos** (`stm32fx/eth.c`): `ETH_EXTERN_GetSpeedAndDuplex()` is a
   no-op stub - the PHY's resolved speed/duplex after autonegotiation is
   silently discarded, leaving MACCR at whatever pre-autoneg values were
-  configured. `phy_reset_and_autonegotiate()` in `stm32_common.c` reads the
+  configured. `update_link()` in `stm32_common.c` reads the
   PHY's vendor-specific status register and updates `MACCR.FES`/`MACCR.DM`
   - though see the comment there: the exact bit polarity for this is
   inferred from dnx-rtos's own (unused) Configtool metadata for the
