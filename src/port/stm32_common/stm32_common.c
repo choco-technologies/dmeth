@@ -30,6 +30,10 @@
 
 #define PHY_MDIO_TIMEOUT_ITERATIONS   200000U
 
+/* Upper bound on the PHY software reset (BCR.Reset self-clears once it is
+ * done - typically well under a millisecond), polled every millisecond. */
+#define PHY_RESET_TIMEOUT_MS          500U
+
 /* How long dmeth_port_receive_frame() waits on the RX semaphore before
  * re-examining the descriptor ring anyway. The semaphore is only a wake-up
  * hint (see dmeth_port_receive_frame()), so this bounds how long a caller
@@ -93,6 +97,9 @@ typedef struct
     volatile uint32_t   tx_head;      /* next descriptor a transmit fills */
     uint32_t            io_timeout_ms;/* bound on a blocking receive/transmit; 0 = wait forever */
     dmosi_semaphore_t   rx_sem;       /* posted from the ISR when a frame is ready */
+    dmosi_mutex_t       phy_mutex;    /* serializes the MDIO transactions of update_link() */
+    volatile bool       link_configured; /* MACCR speed/duplex match the current link (see update_link()) */
+    dmeth_loopback_mode_t loopback;   /* while not none, MACCR speed/duplex are left alone */
 } eth_state_t;
 
 static eth_state_t s_eth[DMETH_MAX_INSTANCES];
@@ -190,36 +197,98 @@ static uint32_t mdc_clock_range(void)
 }
 
 /**
- * @brief Reset the PHY, run autonegotiation, and apply the resolved speed/duplex to MACCR.
+ * @brief Reset the PHY and wait for the reset to complete.
  *
- * Resets and autonegotiates the PHY, then (best-effort - see the comment on
- * #PHY_REG_LAN8742A_SPECIAL_STATUS above) applies the resolved speed/duplex
- * to MACCR. dnx-rtos's `ETH_EXTERN_GetSpeedAndDuplex()` hook is a no-op stub
- * that silently discards this instead - this fixes that gap.
+ * BCR.Reset self-clears once the PHY is done, which is polled every
+ * millisecond for at most #PHY_RESET_TIMEOUT_MS, instead of always waiting
+ * for the worst case.
  *
- * @param phy_addr MDIO address of the PHY chip to reset/autonegotiate.
+ * @param phy_addr MDIO address of the PHY chip to reset.
+ * @return true once the reset has completed, false on timeout.
  */
-static void phy_reset_and_autonegotiate(uint8_t phy_addr)
+static bool phy_reset(uint8_t phy_addr)
 {
-    mdio_write(phy_addr, PHY_REG_BCR, PHY_BCR_RESET);
-    dmclk_port_delay_us(500000); /* PHY reset takes up to ~500ms on typical parts */
+    if (mdio_write(phy_addr, PHY_REG_BCR, PHY_BCR_RESET) != 0)
+        return false;
 
-    mdio_write(phy_addr, PHY_REG_BCR, PHY_BCR_AUTONEG_ENABLE | PHY_BCR_RESTART_AUTONEG);
-
-    uint32_t timeout = PHY_MDIO_TIMEOUT_ITERATIONS;
-    while ((mdio_read(phy_addr, PHY_REG_BSR) & PHY_BSR_AUTONEG_COMPLETE) == 0)
+    for (uint32_t waited_ms = 0; waited_ms < PHY_RESET_TIMEOUT_MS; waited_ms++)
     {
-        if (--timeout == 0)
-            break; /* leave MACCR at its pre-autoneg default rather than hang forever */
-        dmclk_port_delay_us(100);
+        dmclk_port_delay_us(1000);
+        if ((mdio_read(phy_addr, PHY_REG_BCR) & PHY_BCR_RESET) == 0)
+            return true;
     }
+    return false;
+}
 
+/**
+ * @brief Reset the PHY and start autonegotiation, without waiting for it.
+ *
+ * Autonegotiation takes seconds with a cable attached and never completes
+ * without one, so it runs in the background: the resolved speed/duplex are
+ * applied to MACCR by update_link() once the PHY reports the link up.
+ *
+ * @param st State of the instance whose PHY to reset.
+ */
+static void phy_start_autonegotiation(eth_state_t *st)
+{
+    if (!phy_reset(st->phy_address))
+        DMOD_LOG_WARN("ETH PHY %u reset did not complete\n", st->phy_address);
+
+    mdio_write(st->phy_address, PHY_REG_BCR, PHY_BCR_AUTONEG_ENABLE | PHY_BCR_RESTART_AUTONEG);
+    st->link_configured = false;
+}
+
+/**
+ * @brief Apply the speed/duplex resolved by autonegotiation to MACCR.
+ *
+ * dnx-rtos's `ETH_EXTERN_GetSpeedAndDuplex()` hook is a no-op stub that
+ * silently discards this instead - this fixes that gap (see the comment on
+ * #PHY_REG_LAN8742A_SPECIAL_STATUS above).
+ *
+ * @param phy_addr MDIO address of the PHY chip.
+ */
+static void apply_negotiated_link(uint8_t phy_addr)
+{
     uint16_t status = mdio_read(phy_addr, PHY_REG_LAN8742A_SPECIAL_STATUS);
     uint32_t maccr = ETH->MACCR;
 
     maccr = (status & PHY_LAN8742A_SPEED_100M)  ? (maccr | ETH_MACCR_FES) : (maccr & ~ETH_MACCR_FES);
     maccr = (status & PHY_LAN8742A_DUPLEX_FULL) ? (maccr | ETH_MACCR_DM)  : (maccr & ~ETH_MACCR_DM);
     ETH->MACCR = maccr;
+}
+
+/**
+ * @brief Read the link state, and bring MACCR in line with it.
+ *
+ * The first time the PHY reports the link up with autonegotiation complete
+ * (after init, or after the link went down), the negotiated speed/duplex
+ * are applied to MACCR - a MAC/PHY mismatch silently discards every
+ * received frame. Called from dmeth_port_get_link_status(), and from the
+ * receive/transmit paths so the link gets configured even if nobody polls
+ * its status.
+ *
+ * @param st State of the instance.
+ * @return true if the PHY reports the link up.
+ */
+static bool update_link(eth_state_t *st)
+{
+    dmosi_mutex_lock(st->phy_mutex);
+
+    uint16_t bsr = mdio_read(st->phy_address, PHY_REG_BSR);
+    bool up = (bsr & PHY_BSR_LINK_STATUS) != 0;
+    if (!up)
+    {
+        st->link_configured = false;
+    }
+    else if (!st->link_configured && st->loopback == dmeth_loopback_mode_none &&
+             (bsr & PHY_BSR_AUTONEG_COMPLETE) != 0)
+    {
+        apply_negotiated_link(st->phy_address);
+        st->link_configured = true;
+    }
+
+    dmosi_mutex_unlock(st->phy_mutex);
+    return up;
 }
 
 /* ---- Descriptor ring setup ---- */
@@ -339,8 +408,8 @@ dmod_dmeth_port_api_declaration(1.0, dmeth_instance_t, _get_instance_count, ( vo
  *
  * Enables the SYSCFG/RCC clocks and selects RMII mode, resets the MAC and
  * waits for the reset to clear, selects the MDC clock divisor from the
- * runtime HCLK, resets and autonegotiates the PHY (see
- * phy_reset_and_autonegotiate()), configures MACCR/MACFFR (auto pad/CRC
+ * runtime HCLK, resets the PHY and starts autonegotiation (see
+ * phy_start_autonegotiation()), configures MACCR/MACFFR (auto pad/CRC
  * strip, promiscuous mode from @p config) and DMABMR/DMAOMR (chained-mode
  * descriptors, store-and-forward, operate-on-second-frame), allocates the
  * RX/TX descriptor rings (see allocate_rings()), creates the RX-ready
@@ -390,11 +459,15 @@ dmod_dmeth_port_api_declaration(1.0, int, _init, ( dmeth_instance_t instance, co
 
     ETH->MACMIIAR = (ETH->MACMIIAR & ~ETH_MACMIIAR_CR_Msk) | mdc_clock_range();
 
-    phy_reset_and_autonegotiate(st->phy_address);
+    st->phy_mutex = dmosi_mutex_create(false);
+    if (st->phy_mutex == NULL)
+        return -ENOMEM;
+
+    phy_start_autonegotiation(st);
 
     /* MAC: strip the FCS off every received frame, promiscuous mode from
-     * config; speed/duplex bits were already applied by
-     * phy_reset_and_autonegotiate(). TE/RE are left clear here -
+     * config; speed/duplex bits are applied by update_link() once
+     * autonegotiation completes. TE/RE are left clear here -
      * DMDRVI_IOCTL_NET_START enables them.
      *
      * Both stripping bits are needed, because each covers only half the
@@ -422,12 +495,18 @@ dmod_dmeth_port_api_declaration(1.0, int, _init, ( dmeth_instance_t instance, co
 
     int ret = allocate_rings(st, config->rx_buffer_count, config->tx_buffer_count);
     if (ret != 0)
+    {
+        dmosi_mutex_destroy(st->phy_mutex);
+        st->phy_mutex = NULL;
         return ret;
+    }
 
     st->rx_sem = dmosi_semaphore_create(0, config->rx_buffer_count);
     if (st->rx_sem == NULL)
     {
         free_rings(st);
+        dmosi_mutex_destroy(st->phy_mutex);
+        st->phy_mutex = NULL;
         return -ENOMEM;
     }
 
@@ -472,6 +551,11 @@ dmod_dmeth_port_api_declaration(1.0, int, _deinit, ( dmeth_instance_t instance )
     {
         dmosi_semaphore_destroy(st->rx_sem);
         st->rx_sem = NULL;
+    }
+    if (st->phy_mutex != NULL)
+    {
+        dmosi_mutex_destroy(st->phy_mutex);
+        st->phy_mutex = NULL;
     }
     free_rings(st);
 
@@ -575,17 +659,19 @@ dmod_dmeth_port_api_declaration(1.0, int, _stop, ( dmeth_instance_t instance ))
 /**
  * @brief Poll the PHY's link status bit over MDIO.
  *
+ * Also applies the negotiated speed/duplex to MACCR when the link has just
+ * come up (see update_link()).
+ *
  * @param instance Target instance.
  * @return true if the PHY reports the link up, false if down or if
- *         @p instance is invalid.
+ *         @p instance is invalid or not initialized.
  */
 dmod_dmeth_port_api_declaration(1.0, bool, _get_link_status, ( dmeth_instance_t instance ))
 {
-    if (!is_valid_instance(instance))
+    if (!is_valid_instance(instance) || !s_eth[instance].initialized)
         return false;
 
-    uint16_t bsr = mdio_read(s_eth[instance].phy_address, PHY_REG_BSR);
-    return (bsr & PHY_BSR_LINK_STATUS) != 0;
+    return update_link(&s_eth[instance]);
 }
 
 /**
@@ -671,6 +757,8 @@ dmod_dmeth_port_api_declaration(1.0, int, _set_loopback_mode, ( dmeth_instance_t
         return -EINVAL;
 
     eth_state_t *st = &s_eth[instance];
+    st->loopback = mode;
+    st->link_configured = false;
 
     switch (mode)
     {
@@ -738,6 +826,9 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
     eth_state_t *st = &s_eth[instance];
     if (!st->initialized || !st->running)
         return -EIO;
+
+    if (!st->link_configured)
+        update_link(st);
 
     eth_dma_desc_t *desc = &st->tx_desc[st->tx_head];
 
@@ -826,7 +917,13 @@ dmod_dmeth_port_api_declaration(1.0, int, _receive_frame, ( dmeth_instance_t ins
     {
         if (io_timeout_expired(st, start_ms))
             return -ETIMEDOUT;
-        dmosi_semaphore_wait(st->rx_sem, 1, DMETH_RX_WAIT_TIMEOUT_MS);
+        if (dmosi_semaphore_wait(st->rx_sem, 1, DMETH_RX_WAIT_TIMEOUT_MS) != 0)
+        {
+            /* Nothing received for a while: also where a link that came up
+             * (or went down and up again) gets its speed/duplex applied,
+             * even if nobody polls the link status - see update_link(). */
+            update_link(st);
+        }
     }
 
     uint32_t frame_len = (desc->status & ETH_DMARxDesc_FL_Msk) >> ETH_DMARxDesc_FL_Pos;
