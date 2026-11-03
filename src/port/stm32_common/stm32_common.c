@@ -96,6 +96,7 @@ typedef struct
     volatile uint32_t   rx_tail;      /* next descriptor the core consumes */
     volatile uint32_t   tx_head;      /* next descriptor a transmit fills */
     uint32_t            io_timeout_ms;/* bound on a blocking receive/transmit; 0 = wait forever */
+    dmosi_mutex_t       tx_mutex;    /* reserves a descriptor through its DMA handoff */
     dmosi_semaphore_t   rx_sem;       /* posted from the ISR when a frame is ready */
     dmosi_mutex_t       phy_mutex;    /* serializes the MDIO transactions of update_link() */
     volatile bool       link_configured; /* MACCR speed/duplex match the current link (see update_link()) */
@@ -365,7 +366,7 @@ static int allocate_rings(eth_state_t *st, uint16_t rx_count, uint16_t tx_count)
         d->next      = &st->rx_desc[(i + 1) % rx_count];
         d->status    = ETH_DMA_DESC_OWN;
     }
-    ETH->DMARDLAR = (uint32_t)&st->rx_desc[0];
+    ETH->DMARDLAR = (uint32_t)(uintptr_t)&st->rx_desc[0];
 
     for (uint16_t i = 0; i < tx_count; i++)
     {
@@ -375,7 +376,7 @@ static int allocate_rings(eth_state_t *st, uint16_t rx_count, uint16_t tx_count)
         d->next      = &st->tx_desc[(i + 1) % tx_count];
         d->status    = ETH_DMATxDesc_TCH; /* CPU-owned (OWN clear) until a transmit fills it */
     }
-    ETH->DMATDLAR = (uint32_t)&st->tx_desc[0];
+    ETH->DMATDLAR = (uint32_t)(uintptr_t)&st->tx_desc[0];
 
     st->rx_count = rx_count;
     st->tx_count = tx_count;
@@ -501,9 +502,14 @@ dmod_dmeth_port_api_declaration(1.0, int, _init, ( dmeth_instance_t instance, co
         return ret;
     }
 
+    st->tx_mutex = dmosi_mutex_create(false);
     st->rx_sem = dmosi_semaphore_create(0, config->rx_buffer_count);
-    if (st->rx_sem == NULL)
+    if (st->rx_sem == NULL || st->tx_mutex == NULL)
     {
+        if (st->rx_sem != NULL) dmosi_semaphore_destroy(st->rx_sem);
+        if (st->tx_mutex != NULL) dmosi_mutex_destroy(st->tx_mutex);
+        st->rx_sem = NULL;
+        st->tx_mutex = NULL;
         free_rings(st);
         dmosi_mutex_destroy(st->phy_mutex);
         st->phy_mutex = NULL;
@@ -556,6 +562,11 @@ dmod_dmeth_port_api_declaration(1.0, int, _deinit, ( dmeth_instance_t instance )
     {
         dmosi_mutex_destroy(st->phy_mutex);
         st->phy_mutex = NULL;
+    }
+    if (st->tx_mutex != NULL)
+    {
+        dmosi_mutex_destroy(st->tx_mutex);
+        st->tx_mutex = NULL;
     }
     free_rings(st);
 
@@ -830,7 +841,12 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
     if (!st->link_configured)
         update_link(st);
 
-    eth_dma_desc_t *desc = &st->tx_desc[st->tx_head];
+    /* RX responses and retransmission timers may send concurrently.
+     * Reserving one slot twice skips a descriptor and strands DMA at the
+     * unowned hole. Serialize the whole handoff without masking IRQs. */
+    dmosi_mutex_lock(st->tx_mutex);
+    uint32_t head = st->tx_head;
+    eth_dma_desc_t *desc = &st->tx_desc[head];
 
     /* Block until this descriptor is free. dmdrvi has no per-call
      * O_NONBLOCK/timeout to plumb a bound through, so the bound - if the
@@ -839,14 +855,19 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
     while ((desc->status & ETH_DMA_DESC_OWN) != 0)
     {
         if (io_timeout_expired(st, start_ms))
+        {
+            dmosi_mutex_unlock(st->tx_mutex);
             return -ETIMEDOUT;
+        }
         dmclk_port_delay_us(100);
     }
 
     memcpy(desc->buffer, frame, len);
     desc->ctrl_size = (uint32_t)len & ETH_DMATxDesc_TBS1_Msk;
     desc->status |= ETH_DMATxDesc_FS | ETH_DMATxDesc_LS;
+    __sync_synchronize(); /* Publish bytes/length before DMA ownership. */
     desc->status |= ETH_DMA_DESC_OWN;
+    __sync_synchronize(); /* Publish ownership before the DMA poll demand. */
 
     /* Always poke the TX DMA: real hardware flags a stall via TBUS, but the
      * poll demand is harmless while the DMA is running, and Renode's MAC
@@ -854,7 +875,8 @@ dmod_dmeth_port_api_declaration(1.0, int, _transmit_frame, ( dmeth_instance_t in
     ETH->DMASR = ETH_DMASR_TBUS;
     ETH->DMATPDR = 0;
 
-    st->tx_head = (st->tx_head + 1U) % st->tx_count;
+    st->tx_head = (head + 1U) % st->tx_count;
+    dmosi_mutex_unlock(st->tx_mutex);
     return 0;
 }
 
