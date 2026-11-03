@@ -93,4 +93,5 @@ dmod_link_modules(${DMOD_MODULE_NAME}
 
 add_subdirectory(src/port)
 target_link_libraries(${DMOD_MODULE_NAME} ${DMOD_MODULE_NAME}_port_if)
+enable_testing()
 add_subdirectory(tests)

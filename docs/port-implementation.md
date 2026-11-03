@@ -223,3 +223,24 @@ a host/simulator build.
 5. Do not introduce a module-specific variable (e.g. `<MODULE>_MCU_SERIES`) for
    this - `DMOD_CPU_FAMILY` is the ecosystem-wide convention, already wired
    into `dmf-get` package resolution.
+
+## Concurrent transmitters
+
+RX protocol replies, application sends and TCP retransmission timers may
+enter the port concurrently. The per-instance TX mutex covers descriptor
+selection, waiting, packet copy, DMA ownership publication, poll demand
+and head advancement. A timeout releases the mutex without advancing the
+head. IRQs remain enabled while a sender waits; this is not a critical
+section around a DMA wait.
+
+Without serialization, two senders can both select the old head and then
+advance it twice. DMA stops at the skipped CPU-owned descriptor while the
+software waits on a later DMA-owned slot. On STM32 this froze the priority-4
+TCP timer worker and starved the UI/console. A captured ring had seven
+DMA-owned slots around one free slot at the hardware TX cursor; publishing
+that slot and polling DMA restored the console without a reset.
+
+A native two-thread regression forces the preemption during the packet
+copy and checks distinct payloads, descriptor ownership and head position.
+It also checks timeout unlock/retry. DMA visibility fences publish bytes
+and length before OWN, and OWN before the poll demand.

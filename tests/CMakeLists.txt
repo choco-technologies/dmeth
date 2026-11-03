@@ -27,3 +27,16 @@ dmod_link_modules(${DMOD_MODULE_NAME}
 )
 
 target_link_libraries(${DMOD_MODULE_NAME} dmeth_if)
+
+if(DMOD_TOOLS_NAME STREQUAL "arch/x86_64")
+    find_package(Threads REQUIRED)
+    add_executable(test_tx_ring tx_ring_test.c)
+    target_compile_definitions(test_tx_ring PRIVATE DMOD_dmeth_port DMOD_CURRENT_ALLOCATOR="test_tx_ring")
+    get_target_property(PORT_INCLUDES dmeth_port INCLUDE_DIRECTORIES)
+    target_include_directories(test_tx_ring PRIVATE ${PORT_INCLUDES})
+    target_link_libraries(test_tx_ring PRIVATE dmeth_port_if dmod_inc Threads::Threads)
+    target_compile_options(test_tx_ring PRIVATE -ffunction-sections -fdata-sections)
+    target_link_options(test_tx_ring PRIVATE -Wl,--gc-sections)
+    add_test(NAME tx_ring COMMAND test_tx_ring)
+    set_tests_properties(tx_ring PROPERTIES TIMEOUT 10)
+endif()

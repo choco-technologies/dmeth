@@ -28,7 +28,10 @@ jobs:
           # never touches src/port/*/port.c - safe to build natively here
           # regardless of which CPU family the port defaults to.
           cmake .. -DDMOD_MODE=DMOD_MODULE -DDMOD_TOOLS_NAME=arch/x86_64
-          cmake --build . --target dmeth test_dmeth
+          cmake --build . --target dmeth test_dmeth test_tx_ring
+
+      - name: Test concurrent DMA transmitters
+        run: ctest --test-dir build -R "^tx_ring$" --output-on-failure
 
       - name: Verify module files
         run: |
